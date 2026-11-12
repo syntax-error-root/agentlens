@@ -21,19 +21,10 @@ use axum::{
 use serde_json::json;
 use std::sync::Arc;
 
-#[derive(Clone)]
+#[derive(Clone, Default)]
 pub struct AppState {
     pub db: Option<DbPool>,
     pub config: AppConfig,
-}
-
-impl Default for AppState {
-    fn default() -> Self {
-        Self {
-            db: None,
-            config: AppConfig::default(),
-        }
-    }
 }
 
 pub fn create_router(state: AppState) -> Router {

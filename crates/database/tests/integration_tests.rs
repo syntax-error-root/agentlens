@@ -1,8 +1,8 @@
 use agentlens_config::AppConfig;
 use agentlens_database::{
-    create_pool, run_migrations, ApiKeysRepository, AuditLogsRepository, BootstrapRepository,
-    DatabaseError, EnvironmentsRepository, OrganizationMembersRepository, OrganizationsRepository,
-    ProjectsRepository, SpansRepository, TokenUsagesRepository, TracesRepository, UsersRepository,
+    create_pool, run_migrations, ApiKeysRepository, EnvironmentsRepository,
+    OrganizationMembersRepository, OrganizationsRepository, ProjectsRepository, SpansRepository,
+    TokenUsagesRepository, TracesRepository, UsersRepository,
 };
 use agentlens_domain::{
     OrgRole, Span, SpanId, SpanType, TokenUsage, TraceId, TraceStatus, UsageSource,
