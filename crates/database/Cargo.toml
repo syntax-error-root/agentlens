@@ -17,3 +17,7 @@ rust_decimal = { workspace = true }
 serde_json = { workspace = true }
 uuid = { workspace = true }
 chrono = { workspace = true }
+
+[dev-dependencies]
+agentlens-auth = { workspace = true }
+
