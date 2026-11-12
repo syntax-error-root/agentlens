@@ -9,6 +9,7 @@ repository.workspace = true
 [dependencies]
 agentlens-domain = { workspace = true }
 agentlens-config = { workspace = true }
+agentlens-observability = { workspace = true }
 agentlens-database = { workspace = true }
 agentlens-telemetry = { workspace = true }
 agentlens-privacy = { workspace = true }

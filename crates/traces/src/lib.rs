@@ -4,11 +4,13 @@
 //! Trace ingestion coordination, privacy filtering, and single-transaction persistence.
 
 use agentlens_database::{DbPool, TracesRepository};
+use agentlens_observability::ObservabilityRegistry;
 use agentlens_privacy::{PrivacyPolicy, RedactionRule};
 use agentlens_telemetry::{
     build_otlp_response, decode_otlp_request, normalize_trace_request, ExportTraceServiceResponse,
     TelemetryError,
 };
+use std::sync::Arc;
 use thiserror::Error;
 use uuid::Uuid;
 
@@ -32,11 +34,22 @@ pub struct IngestionContext {
 
 pub struct TraceIngestionService<'a> {
     pool: &'a DbPool,
+    registry: Option<Arc<ObservabilityRegistry>>,
 }
 
 impl<'a> TraceIngestionService<'a> {
     pub fn new(pool: &'a DbPool) -> Self {
-        Self { pool }
+        Self {
+            pool,
+            registry: None,
+        }
+    }
+
+    pub fn with_registry(pool: &'a DbPool, registry: Arc<ObservabilityRegistry>) -> Self {
+        Self {
+            pool,
+            registry: Some(registry),
+        }
     }
 
     /// Ingests an incoming raw OTLP payload end-to-end:
@@ -80,6 +93,9 @@ impl<'a> TraceIngestionService<'a> {
 
         // 4. Atomic PostgreSQL Transaction
         if !norm_result.spans.is_empty() {
+            if let Some(ref reg) = self.registry {
+                reg.record_spans_ingested(norm_result.spans.len() as u64);
+            }
             let traces_repo = TracesRepository::new(self.pool);
             traces_repo
                 .persist_batch(
@@ -100,5 +116,15 @@ impl<'a> TraceIngestionService<'a> {
 
         let response = build_otlp_response(norm_result.rejected_count, error_msg);
         Ok(response)
+    }
+
+    /// Reconciles and finalizes a trace's summary metrics and status from raw spans and usages.
+    pub async fn finalize_trace(
+        &self,
+        project_id: Uuid,
+        trace_id: &agentlens_domain::TraceId,
+    ) -> Result<Option<agentlens_domain::Trace>, agentlens_database::DatabaseError> {
+        let repo = TracesRepository::new(self.pool);
+        repo.finalize_trace(project_id, trace_id).await
     }
 }
