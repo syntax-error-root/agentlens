@@ -17,11 +17,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .init();
 
     let config = AppConfig::from_env();
+    config.validate()?;
     info!("Starting agentlens-worker (env: {})", config.environment);
 
     let _db_pool = match create_pool(&config).await {
         Ok(pool) => {
-            info!("Worker connected to PostgreSQL at {}", config.database_url);
+            info!("Worker connected to PostgreSQL at {}", config.database.url);
             Some(pool)
         }
         Err(err) => {
