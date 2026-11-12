@@ -12,3 +12,8 @@ agentlens-config = { workspace = true }
 agentlens-database = { workspace = true }
 agentlens-organizations = { workspace = true }
 thiserror = { workspace = true }
+uuid = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+chrono = { workspace = true }
+
