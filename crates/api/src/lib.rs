@@ -26,6 +26,7 @@ use std::sync::Arc;
 pub struct AppState {
     pub db: Option<DbPool>,
     pub config: AppConfig,
+    pub metrics: Arc<agentlens_observability::ObservabilityRegistry>,
 }
 
 pub fn create_router(state: AppState) -> Router {
@@ -89,6 +90,7 @@ pub fn create_router(state: AppState) -> Router {
     let public_routes = Router::new()
         .route("/health/live", get(health_live_handler))
         .route("/health/ready", get(health_ready_handler))
+        .route("/metrics", get(metrics_handler))
         .route("/v1/traces", post(otlp::otlp_traces_handler))
         .route("/api/v1/auth/bootstrap", post(auth::bootstrap_handler))
         .route("/api/v1/auth/login", post(auth::login_handler))
@@ -119,6 +121,17 @@ async fn control_plane_auth_guard(
 
 async fn health_live_handler() -> impl IntoResponse {
     (StatusCode::OK, Json(json!({ "status": "ok" })))
+}
+
+async fn metrics_handler(State(state): State<Arc<AppState>>) -> impl IntoResponse {
+    (
+        StatusCode::OK,
+        [(
+            axum::http::header::CONTENT_TYPE,
+            "text/plain; version=0.0.4; charset=utf-8",
+        )],
+        state.metrics.render_prometheus(),
+    )
 }
 
 async fn health_ready_handler(State(state): State<Arc<AppState>>) -> Response {
@@ -243,5 +256,29 @@ mod tests {
             .unwrap();
 
         assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn test_metrics_endpoint() {
+        let app = create_router(AppState::default());
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri("/metrics")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body_bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let body_str = String::from_utf8_lossy(&body_bytes);
+        assert!(body_str.contains("agentlens_outbox_pending_jobs"));
+        assert!(body_str.contains("agentlens_worker_jobs_processed_total"));
+        assert!(body_str.contains("agentlens_otlp_spans_ingested_total"));
     }
 }

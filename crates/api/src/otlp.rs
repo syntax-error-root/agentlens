@@ -141,7 +141,7 @@ pub async fn otlp_traces_handler(
         .get(header::CONTENT_TYPE)
         .and_then(|h| h.to_str().ok());
 
-    let service = TraceIngestionService::new(pool);
+    let service = TraceIngestionService::with_registry(pool, state.metrics.clone());
     let resp = match service
         .ingest_otlp_payload(&body, content_encoding, content_type, &ctx)
         .await
