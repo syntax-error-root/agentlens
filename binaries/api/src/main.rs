@@ -37,6 +37,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let state = AppState {
         db: db_pool,
         config: config.clone(),
+        ..Default::default()
     };
     let app = create_router(state);
 
