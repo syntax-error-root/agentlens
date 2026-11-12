@@ -1,8 +1,7 @@
 use agentlens_config::AppConfig;
 use agentlens_database::{
-    create_pool, run_migrations, AgentsRepository, DatabaseError, EnvironmentsRepository,
-    OrganizationsRepository, ProjectsRepository, SpansRepository, TokenUsagesRepository,
-    TracesRepository,
+    create_pool, run_migrations, EnvironmentsRepository, OrganizationsRepository,
+    ProjectsRepository, SpansRepository, TokenUsagesRepository, TracesRepository,
 };
 use agentlens_domain::{Span, SpanId, SpanType, TokenUsage, TraceId, TraceStatus, UsageSource};
 use chrono::{Duration, Utc};
@@ -283,7 +282,7 @@ async fn test_cross_tenant_constraint_rejection() {
         .create("Org B", &format!("org-b-{}", Uuid::new_v4()))
         .await
         .unwrap();
-    let (project_b, envs_b) = projects_repo
+    let (_project_b, envs_b) = projects_repo
         .create(org_b.id, "Proj B", &format!("p-b-{}", Uuid::new_v4()), None)
         .await
         .unwrap();
