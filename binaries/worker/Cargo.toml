@@ -1,0 +1,21 @@
+[package]
+name = "agentlens-worker-bin"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+
+[[bin]]
+name = "agentlens-worker"
+path = "src/main.rs"
+
+[dependencies]
+agentlens-app = { workspace = true }
+agentlens-config = { workspace = true }
+agentlens-observability = { workspace = true }
+agentlens-database = { workspace = true }
+agentlens-jobs = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
