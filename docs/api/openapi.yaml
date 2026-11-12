@@ -1,0 +1,370 @@
+openapi: 3.1.0
+info:
+  title: AgentLens Control Plane API
+  version: 0.1.0
+  description: Control plane authentication, RBAC, tenant isolation, and scoped ingestion key management.
+servers:
+  - url: http://localhost:8080
+    description: Local development API server
+paths:
+  /health/live:
+    get:
+      summary: Liveness probe
+      responses:
+        '200':
+          description: Service is alive
+  /health/ready:
+    get:
+      summary: Readiness probe
+      responses:
+        '200':
+          description: Service is ready and database is connected
+        '503':
+          description: Service is unavailable or database is disconnected
+
+  /api/v1/auth/bootstrap:
+    post:
+      summary: First-owner atomic bootstrap
+      description: Acquires PostgreSQL advisory transaction lock. Only succeeds when zero users exist.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [email, password, organization_name, organization_slug]
+              properties:
+                email: { type: string, format: email }
+                password: { type: string, minLength: 8 }
+                organization_name: { type: string }
+                organization_slug: { type: string }
+                default_project_name: { type: string }
+      responses:
+        '201':
+          description: Initial user, organization, project, and default environments created
+        '400':
+          description: Validation error
+        '403':
+          description: Bootstrap already completed (permanently locked)
+
+  /api/v1/auth/login:
+    post:
+      summary: Authenticate local user credentials
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [email, password]
+              properties:
+                email: { type: string, format: email }
+                password: { type: string }
+      responses:
+        '200':
+          description: Login successful; session cookie set
+        '401':
+          description: Invalid email or password
+
+  /api/v1/auth/logout:
+    post:
+      summary: Invalidate user session cookie
+      responses:
+        '200':
+          description: Session cleared
+
+  /api/v1/auth/me:
+    get:
+      summary: Get current authenticated user profile and organization memberships
+      responses:
+        '200':
+          description: Current user profile and memberships
+        '401':
+          description: Unauthenticated
+
+  /api/v1/auth/oidc/start:
+    get:
+      summary: Initialize OIDC authorization code flow with PKCE
+      responses:
+        '200':
+          description: Authorization URL and PKCE verifier/state
+
+  /api/v1/auth/oidc/callback:
+    post:
+      summary: OIDC callback exchange
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [code, nonce, code_verifier]
+              properties:
+                code: { type: string }
+                nonce: { type: string }
+                code_verifier: { type: string }
+      responses:
+        '200':
+          description: User session created
+
+  /api/v1/organizations:
+    get:
+      summary: List organizations for authenticated user
+      responses:
+        '200':
+          description: List of organizations
+    post:
+      summary: Create a new organization (caller becomes owner)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name, slug]
+              properties:
+                name: { type: string }
+                slug: { type: string }
+      responses:
+        '201':
+          description: Organization created
+
+  /api/v1/organizations/{org_id}:
+    get:
+      summary: Get organization details
+      parameters:
+        - name: org_id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        '200':
+          description: Organization details
+        '403':
+          description: Not a member of this organization
+    patch:
+      summary: Update organization name (owner only)
+      parameters:
+        - name: org_id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name]
+              properties:
+                name: { type: string }
+      responses:
+        '200':
+          description: Organization updated
+        '403':
+          description: Owner role required
+
+  /api/v1/organizations/{org_id}/members:
+    get:
+      summary: List members in organization
+      parameters:
+        - name: org_id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        '200':
+          description: List of members with roles
+    post:
+      summary: Add member to organization (owner only)
+      parameters:
+        - name: org_id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [user_id, role]
+              properties:
+                user_id: { type: string, format: uuid }
+                role: { type: string, enum: [owner, admin, member, viewer] }
+      responses:
+        '201':
+          description: Member added
+
+  /api/v1/organizations/{org_id}/members/{user_id}:
+    patch:
+      summary: Update member role (owner only)
+      parameters:
+        - name: org_id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+        - name: user_id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [role]
+              properties:
+                role: { type: string, enum: [owner, admin, member, viewer] }
+      responses:
+        '200':
+          description: Member role updated
+    delete:
+      summary: Remove member from organization (owner only)
+      parameters:
+        - name: org_id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+        - name: user_id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        '200':
+          description: Member removed
+
+  /api/v1/projects:
+    get:
+      summary: List projects for an organization
+      parameters:
+        - name: organization_id
+          in: query
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        '200':
+          description: List of projects
+    post:
+      summary: Create project and default environments (admin or owner)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [organization_id, name, slug]
+              properties:
+                organization_id: { type: string, format: uuid }
+                name: { type: string }
+                slug: { type: string }
+                description: { type: string }
+      responses:
+        '201':
+          description: Project and environments created
+
+  /api/v1/projects/{project_id}:
+    get:
+      summary: Get project details
+      parameters:
+        - name: project_id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        '200':
+          description: Project details
+    patch:
+      summary: Update project settings (admin or owner)
+      parameters:
+        - name: project_id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name, retention_days]
+              properties:
+                name: { type: string }
+                description: { type: string }
+                retention_days: { type: integer, minimum: 1 }
+      responses:
+        '200':
+          description: Project updated
+
+  /api/v1/projects/{project_id}/environments:
+    get:
+      summary: List environments in project
+      parameters:
+        - name: project_id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        '200':
+          description: List of environments
+
+  /api/v1/projects/{project_id}/api-keys:
+    get:
+      summary: List API keys for project (metadata only, no secrets or raw hashes)
+      parameters:
+        - name: project_id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        '200':
+          description: List of API keys metadata
+    post:
+      summary: Create scoped ingestion API key (secret returned exactly once)
+      parameters:
+        - name: project_id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [environment_id, name]
+              properties:
+                environment_id: { type: string, format: uuid }
+                name: { type: string }
+                scopes:
+                  type: array
+                  items: { type: string }
+                expires_in_days: { type: integer, minimum: 1 }
+      responses:
+        '201':
+          description: Key created with full plaintext secret returned once
+
+  /api/v1/api-keys/{key_id}/rotate:
+    post:
+      summary: Rotate API key (revokes old, creates new, returns plaintext secret once)
+      parameters:
+        - name: key_id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        '201':
+          description: Rotated key returned with new plaintext secret
+
+  /api/v1/api-keys/{key_id}:
+    delete:
+      summary: Revoke API key immediately
+      parameters:
+        - name: key_id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        '200':
+          description: Key revoked
