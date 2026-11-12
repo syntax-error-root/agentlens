@@ -1733,6 +1733,178 @@ impl<'a> TracesRepository<'a> {
             None => Ok(None),
         }
     }
+
+    pub async fn finalize_trace(
+        &self,
+        project_id: Uuid,
+        trace_id: &TraceId,
+    ) -> Result<Option<Trace>, DatabaseError> {
+        let trace_id_str = trace_id.as_str();
+
+        let row = sqlx::query(
+            r#"
+            WITH span_summary AS (
+                SELECT
+                    MIN(started_at) AS min_started_at,
+                    MAX(ended_at) AS max_ended_at,
+                    EXTRACT(EPOCH FROM (MAX(ended_at) - MIN(started_at))) * 1000.0 AS duration_ms,
+                    COUNT(*) AS total_spans,
+                    COUNT(*) FILTER (WHERE status = 'error') AS total_error_spans
+                FROM spans
+                WHERE project_id = $1 AND trace_id = $2
+            ),
+            usage_summary AS (
+                SELECT
+                    COALESCE(SUM(input_tokens), 0) AS total_input,
+                    COALESCE(SUM(output_tokens), 0) AS total_output,
+                    COALESCE(SUM(cached_input_tokens), 0) AS total_cached_input,
+                    COALESCE(SUM(reasoning_tokens), 0) AS total_reasoning,
+                    COALESCE(SUM(cost_estimate), 0.0) AS total_cost
+                FROM token_usages
+                WHERE project_id = $1 AND trace_id = $2
+            ),
+            root_info AS (
+                SELECT
+                    span_id AS root_span_id,
+                    name AS root_name,
+                    status AS root_status,
+                    agent_id AS root_agent_id
+                FROM spans
+                WHERE project_id = $1 AND trace_id = $2 AND parent_span_id IS NULL
+                LIMIT 1
+            )
+            UPDATE traces
+            SET started_at = COALESCE(span_summary.min_started_at, traces.started_at),
+                ended_at = COALESCE(span_summary.max_ended_at, traces.ended_at),
+                duration_ms = CASE
+                    WHEN span_summary.duration_ms IS NOT NULL AND span_summary.duration_ms >= 0
+                    THEN span_summary.duration_ms::BIGINT
+                    ELSE traces.duration_ms
+                END,
+                span_count = COALESCE(span_summary.total_spans, 0),
+                error_span_count = COALESCE(span_summary.total_error_spans, 0),
+                total_input_tokens = COALESCE(usage_summary.total_input, 0),
+                total_output_tokens = COALESCE(usage_summary.total_output, 0),
+                total_cached_input_tokens = COALESCE(usage_summary.total_cached_input, 0),
+                total_reasoning_tokens = COALESCE(usage_summary.total_reasoning, 0),
+                estimated_cost = usage_summary.total_cost,
+                root_span_id = COALESCE(root_info.root_span_id, traces.root_span_id),
+                name = COALESCE(root_info.root_name, traces.name),
+                agent_id = COALESCE(root_info.root_agent_id, traces.agent_id),
+                status = CASE
+                    WHEN root_info.root_status IS NOT NULL AND root_info.root_status <> 'unset' THEN root_info.root_status
+                    WHEN span_summary.total_error_spans > 0 THEN 'error'
+                    ELSE traces.status
+                END,
+                finalized_at = now(),
+                updated_at = now()
+            FROM span_summary, usage_summary
+            LEFT JOIN root_info ON TRUE
+            WHERE traces.project_id = $1 AND traces.trace_id = $2
+            RETURNING traces.id, traces.organization_id, traces.project_id, traces.environment_id,
+                      traces.agent_id, traces.session_id, traces.trace_id, traces.root_span_id,
+                      traces.name, traces.status, traces.started_at, traces.ended_at,
+                      traces.duration_ms, traces.span_count, traces.error_span_count,
+                      traces.total_input_tokens, traces.total_output_tokens,
+                      traces.total_cached_input_tokens, traces.total_reasoning_tokens,
+                      traces.estimated_cost, traces.has_unpriced_usage, traces.currency,
+                      traces.resource_attributes, traces.attributes, traces.received_at,
+                      traces.finalized_at, traces.created_at, traces.updated_at
+            "#,
+        )
+        .bind(project_id)
+        .bind(trace_id_str)
+        .fetch_optional(self.pool)
+        .await?;
+
+        let trace = match row {
+            Some(r) => {
+                let tid_raw: String = r.get("trace_id");
+                let parsed_trace_id =
+                    TraceId::new(tid_raw).map_err(|e| DatabaseError::NotFound(e.to_string()))?;
+
+                let root_sid_raw: Option<String> = r.get("root_span_id");
+                let parsed_root_span_id = match root_sid_raw {
+                    Some(sid) => {
+                        Some(SpanId::new(sid).map_err(|e| DatabaseError::NotFound(e.to_string()))?)
+                    }
+                    None => None,
+                };
+
+                let status_raw: String = r.get("status");
+                let status = status_raw
+                    .parse::<TraceStatus>()
+                    .unwrap_or(TraceStatus::Unset);
+
+                let t = Trace {
+                    id: r.get("id"),
+                    organization_id: r.get("organization_id"),
+                    project_id: r.get("project_id"),
+                    environment_id: r.get("environment_id"),
+                    agent_id: r.get("agent_id"),
+                    session_id: r.get("session_id"),
+                    trace_id: parsed_trace_id,
+                    root_span_id: parsed_root_span_id,
+                    name: r.get("name"),
+                    status,
+                    started_at: r.get("started_at"),
+                    ended_at: r.get("ended_at"),
+                    duration_ms: r.get("duration_ms"),
+                    span_count: r.get("span_count"),
+                    error_span_count: r.get("error_span_count"),
+                    total_input_tokens: r.get("total_input_tokens"),
+                    total_output_tokens: r.get("total_output_tokens"),
+                    total_cached_input_tokens: r.get("total_cached_input_tokens"),
+                    total_reasoning_tokens: r.get("total_reasoning_tokens"),
+                    estimated_cost: r.get("estimated_cost"),
+                    has_unpriced_usage: r.get("has_unpriced_usage"),
+                    currency: r.get("currency"),
+                    resource_attributes: r.get("resource_attributes"),
+                    attributes: r.get("attributes"),
+                    received_at: r.get("received_at"),
+                    finalized_at: r.get("finalized_at"),
+                    created_at: r.get("created_at"),
+                    updated_at: r.get("updated_at"),
+                };
+
+                if let (Some(aid), Some(ended)) = (t.agent_id, t.ended_at) {
+                    let _ = sqlx::query(
+                        r#"
+                        UPDATE agents
+                        SET last_seen_at = GREATEST(COALESCE(last_seen_at, $2), $2),
+                            updated_at = now()
+                        WHERE project_id = $1 AND id = $3
+                        "#,
+                    )
+                    .bind(t.project_id)
+                    .bind(ended)
+                    .bind(aid)
+                    .execute(self.pool)
+                    .await;
+                }
+
+                if let (Some(sid), Some(ended)) = (t.session_id, t.ended_at) {
+                    let _ = sqlx::query(
+                        r#"
+                        UPDATE sessions
+                        SET last_seen_at = GREATEST(COALESCE(last_seen_at, $2), $2)
+                        WHERE project_id = $1 AND id = $3
+                        "#,
+                    )
+                    .bind(t.project_id)
+                    .bind(ended)
+                    .bind(sid)
+                    .execute(self.pool)
+                    .await;
+                }
+
+                Some(t)
+            }
+            None => None,
+        };
+
+        Ok(trace)
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -2013,28 +2185,33 @@ impl<'a> OutboxRepository<'a> {
     ) -> Result<Vec<OutboxJob>, DatabaseError> {
         let rows = sqlx::query(
             r#"
-            UPDATE outbox_jobs
-            SET status = 'processing',
-                locked_at = now(),
-                locked_by = $1,
-                lease_expires_at = now() + ($3 * interval '1 second'),
-                attempts = attempts + 1
-            WHERE id IN (
-                SELECT id FROM outbox_jobs
+            WITH claimable AS (
+                SELECT id
+                FROM outbox_jobs
                 WHERE (status = 'pending' AND available_at <= now())
-                   OR (status = 'processing' AND lease_expires_at < now())
-                ORDER BY available_at ASC, created_at ASC
-                LIMIT $2
+                   OR (status = 'processing' AND lease_expires_at <= now())
+                ORDER BY available_at ASC, id ASC
+                LIMIT $1
                 FOR UPDATE SKIP LOCKED
             )
-            RETURNING id, organization_id, project_id, job_type, dedup_key,
-                      payload, status, attempts, max_attempts, available_at,
-                      lease_expires_at, locked_at, locked_by, last_error,
-                      created_at, completed_at
+            UPDATE outbox_jobs
+            SET status = 'processing',
+                locked_by = $2,
+                locked_at = now(),
+                lease_expires_at = now() + ($3 * interval '1 second'),
+                attempts = attempts + 1
+            FROM claimable
+            WHERE outbox_jobs.id = claimable.id
+            RETURNING outbox_jobs.id, outbox_jobs.organization_id, outbox_jobs.project_id,
+                      outbox_jobs.job_type, outbox_jobs.dedup_key, outbox_jobs.payload,
+                      outbox_jobs.status, outbox_jobs.attempts, outbox_jobs.max_attempts,
+                      outbox_jobs.available_at, outbox_jobs.lease_expires_at,
+                      outbox_jobs.locked_at, outbox_jobs.locked_by, outbox_jobs.last_error,
+                      outbox_jobs.created_at, outbox_jobs.completed_at
             "#,
         )
-        .bind(worker_id)
         .bind(limit)
+        .bind(worker_id)
         .bind(f64::from(lease_seconds))
         .map(|r: PgRow| OutboxJob {
             id: r.get("id"),
@@ -2058,5 +2235,135 @@ impl<'a> OutboxRepository<'a> {
         .await?;
 
         Ok(rows)
+    }
+
+    pub async fn mark_completed(&self, job_id: Uuid) -> Result<(), DatabaseError> {
+        sqlx::query(
+            r#"
+            UPDATE outbox_jobs
+            SET status = 'completed',
+                completed_at = now(),
+                locked_by = NULL,
+                lease_expires_at = NULL
+            WHERE id = $1
+            "#,
+        )
+        .bind(job_id)
+        .execute(self.pool)
+        .await?;
+
+        Ok(())
+    }
+
+    pub async fn mark_failed(
+        &self,
+        job_id: Uuid,
+        attempts: i32,
+        max_attempts: i32,
+        last_error: &str,
+        backoff_seconds: i64,
+    ) -> Result<(), DatabaseError> {
+        if attempts >= max_attempts {
+            sqlx::query(
+                r#"
+                UPDATE outbox_jobs
+                SET status = 'dead',
+                    last_error = $2,
+                    completed_at = now(),
+                    locked_by = NULL,
+                    lease_expires_at = NULL
+                WHERE id = $1
+                "#,
+            )
+            .bind(job_id)
+            .bind(last_error)
+            .execute(self.pool)
+            .await?;
+        } else {
+            sqlx::query(
+                r#"
+                UPDATE outbox_jobs
+                SET status = 'pending',
+                    last_error = $2,
+                    locked_by = NULL,
+                    locked_at = NULL,
+                    lease_expires_at = NULL,
+                    available_at = now() + ($3 * interval '1 second')
+                WHERE id = $1
+                "#,
+            )
+            .bind(job_id)
+            .bind(last_error)
+            .bind(backoff_seconds as f64)
+            .execute(self.pool)
+            .await?;
+        }
+
+        Ok(())
+    }
+
+    pub async fn get_by_id(&self, job_id: Uuid) -> Result<Option<OutboxJob>, DatabaseError> {
+        let row = sqlx::query(
+            r#"
+            SELECT id, organization_id, project_id, job_type, dedup_key,
+                   payload, status, attempts, max_attempts, available_at,
+                   lease_expires_at, locked_at, locked_by, last_error,
+                   created_at, completed_at
+            FROM outbox_jobs
+            WHERE id = $1
+            "#,
+        )
+        .bind(job_id)
+        .fetch_optional(self.pool)
+        .await?;
+
+        Ok(row.map(|r: PgRow| OutboxJob {
+            id: r.get("id"),
+            organization_id: r.get("organization_id"),
+            project_id: r.get("project_id"),
+            job_type: r.get("job_type"),
+            dedup_key: r.get("dedup_key"),
+            payload: r.get("payload"),
+            status: r.get("status"),
+            attempts: r.get("attempts"),
+            max_attempts: r.get("max_attempts"),
+            available_at: r.get("available_at"),
+            lease_expires_at: r.get("lease_expires_at"),
+            locked_at: r.get("locked_at"),
+            locked_by: r.get("locked_by"),
+            last_error: r.get("last_error"),
+            created_at: r.get("created_at"),
+            completed_at: r.get("completed_at"),
+        }))
+    }
+
+    pub async fn get_pending_count(&self) -> Result<i64, DatabaseError> {
+        let row = sqlx::query(
+            r#"
+            SELECT COUNT(*) AS count
+            FROM outbox_jobs
+            WHERE status = 'pending'
+            "#,
+        )
+        .map(|r: PgRow| r.get::<i64, _>("count"))
+        .fetch_one(self.pool)
+        .await?;
+
+        Ok(row)
+    }
+
+    pub async fn get_oldest_pending_age_seconds(&self) -> Result<f64, DatabaseError> {
+        let row = sqlx::query(
+            r#"
+            SELECT COALESCE(EXTRACT(EPOCH FROM (now() - MIN(created_at))), 0.0) AS age
+            FROM outbox_jobs
+            WHERE status = 'pending'
+            "#,
+        )
+        .map(|r: PgRow| r.get::<f64, _>("age"))
+        .fetch_one(self.pool)
+        .await?;
+
+        Ok(row)
     }
 }
