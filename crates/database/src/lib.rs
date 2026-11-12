@@ -2182,14 +2182,16 @@ impl<'a> OutboxRepository<'a> {
         worker_id: &str,
         limit: i64,
         lease_seconds: i32,
+        project_id: Option<Uuid>,
     ) -> Result<Vec<OutboxJob>, DatabaseError> {
         let rows = sqlx::query(
             r#"
             WITH claimable AS (
                 SELECT id
                 FROM outbox_jobs
-                WHERE (status = 'pending' AND available_at <= now())
-                   OR (status = 'processing' AND lease_expires_at <= now())
+                WHERE ((status = 'pending' AND available_at <= now())
+                   OR (status = 'processing' AND lease_expires_at <= now()))
+                  AND ($4::UUID IS NULL OR project_id = $4)
                 ORDER BY available_at ASC, id ASC
                 LIMIT $1
                 FOR UPDATE SKIP LOCKED
@@ -2213,6 +2215,7 @@ impl<'a> OutboxRepository<'a> {
         .bind(limit)
         .bind(worker_id)
         .bind(f64::from(lease_seconds))
+        .bind(project_id)
         .map(|r: PgRow| OutboxJob {
             id: r.get("id"),
             organization_id: r.get("organization_id"),
@@ -2337,14 +2340,15 @@ impl<'a> OutboxRepository<'a> {
         }))
     }
 
-    pub async fn get_pending_count(&self) -> Result<i64, DatabaseError> {
+    pub async fn get_pending_count(&self, project_id: Option<Uuid>) -> Result<i64, DatabaseError> {
         let row = sqlx::query(
             r#"
             SELECT COUNT(*) AS count
             FROM outbox_jobs
-            WHERE status = 'pending'
+            WHERE status = 'pending' AND ($1::UUID IS NULL OR project_id = $1)
             "#,
         )
+        .bind(project_id)
         .map(|r: PgRow| r.get::<i64, _>("count"))
         .fetch_one(self.pool)
         .await?;
@@ -2352,14 +2356,18 @@ impl<'a> OutboxRepository<'a> {
         Ok(row)
     }
 
-    pub async fn get_oldest_pending_age_seconds(&self) -> Result<f64, DatabaseError> {
+    pub async fn get_oldest_pending_age_seconds(
+        &self,
+        project_id: Option<Uuid>,
+    ) -> Result<f64, DatabaseError> {
         let row = sqlx::query(
             r#"
-            SELECT COALESCE(EXTRACT(EPOCH FROM (now() - MIN(created_at))), 0.0) AS age
+            SELECT (COALESCE(EXTRACT(EPOCH FROM (now() - MIN(created_at))), 0.0))::FLOAT8 AS age
             FROM outbox_jobs
-            WHERE status = 'pending'
+            WHERE status = 'pending' AND ($1::UUID IS NULL OR project_id = $1)
             "#,
         )
+        .bind(project_id)
         .map(|r: PgRow| r.get::<f64, _>("age"))
         .fetch_one(self.pool)
         .await?;

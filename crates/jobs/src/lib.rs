@@ -36,6 +36,7 @@ pub struct WorkerConfig {
     pub batch_size: i64,
     pub lease_duration_seconds: i32,
     pub poll_interval: Duration,
+    pub project_id: Option<Uuid>,
 }
 
 impl Default for WorkerConfig {
@@ -45,6 +46,7 @@ impl Default for WorkerConfig {
             batch_size: 10,
             lease_duration_seconds: 30,
             poll_interval: Duration::from_millis(500),
+            project_id: None,
         }
     }
 }
@@ -95,6 +97,7 @@ impl OutboxWorker {
                 &self.config.worker_id,
                 self.config.batch_size,
                 self.config.lease_duration_seconds,
+                self.config.project_id,
             )
             .await?;
 
@@ -114,10 +117,13 @@ impl OutboxWorker {
         }
 
         // Refresh outbox queue gauge metrics
-        if let Ok(pending) = outbox_repo.get_pending_count().await {
+        if let Ok(pending) = outbox_repo.get_pending_count(self.config.project_id).await {
             self.registry.set_outbox_pending_jobs(pending);
         }
-        if let Ok(age) = outbox_repo.get_oldest_pending_age_seconds().await {
+        if let Ok(age) = outbox_repo
+            .get_oldest_pending_age_seconds(self.config.project_id)
+            .await
+        {
             self.registry.set_outbox_oldest_pending_age_seconds(age);
         }
 

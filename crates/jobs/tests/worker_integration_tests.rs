@@ -60,6 +60,7 @@ async fn test_worker_normal_finalization() {
         batch_size: 10,
         lease_duration_seconds: 30,
         poll_interval: Duration::from_millis(50),
+        project_id: Some(project_id),
     };
     let worker = OutboxWorker::new(pool.clone(), registry.clone(), worker_config);
 
@@ -240,6 +241,7 @@ async fn test_lease_expiration_recovery_after_simulated_crash() {
             batch_size: 10,
             lease_duration_seconds: 30,
             poll_interval: Duration::from_millis(50),
+            project_id: Some(project_id),
         },
     );
 
@@ -301,7 +303,14 @@ async fn test_duplicate_job_idempotency() {
         .unwrap();
 
     let registry = Arc::new(ObservabilityRegistry::new());
-    let worker = OutboxWorker::new(pool.clone(), registry, WorkerConfig::default());
+    let worker = OutboxWorker::new(
+        pool.clone(),
+        registry,
+        WorkerConfig {
+            project_id: Some(project_id),
+            ..WorkerConfig::default()
+        },
+    );
 
     // Pass 1
     worker.run_once().await.unwrap();
@@ -401,7 +410,14 @@ async fn test_late_arriving_span_reconciliation() {
         .unwrap();
 
     let registry = Arc::new(ObservabilityRegistry::new());
-    let worker = OutboxWorker::new(pool.clone(), registry, WorkerConfig::default());
+    let worker = OutboxWorker::new(
+        pool.clone(),
+        registry,
+        WorkerConfig {
+            project_id: Some(project_id),
+            ..WorkerConfig::default()
+        },
+    );
 
     // Finalize first batch
     worker.run_once().await.unwrap();
@@ -474,7 +490,14 @@ async fn test_dead_letter_transition_on_exhausted_attempts() {
     };
 
     let registry = Arc::new(ObservabilityRegistry::new());
-    let worker = OutboxWorker::new(pool.clone(), registry.clone(), WorkerConfig::default());
+    let worker = OutboxWorker::new(
+        pool.clone(),
+        registry.clone(),
+        WorkerConfig {
+            project_id: Some(project_id),
+            ..WorkerConfig::default()
+        },
+    );
 
     // Insert job referencing non-existent trace with attempts = 2, max_attempts = 3
     let job_id = Uuid::new_v4();
@@ -502,7 +525,13 @@ async fn test_dead_letter_transition_on_exhausted_attempts() {
     .unwrap();
 
     let outbox_repo = OutboxRepository::new(&pool);
-    assert_eq!(outbox_repo.get_pending_count().await.unwrap(), 1);
+    assert_eq!(
+        outbox_repo
+            .get_pending_count(Some(project_id))
+            .await
+            .unwrap(),
+        1
+    );
 
     // Worker claims this job (attempts becomes 3 == max_attempts), handler fails (trace not found)
     let processed = worker.run_once().await.unwrap();
