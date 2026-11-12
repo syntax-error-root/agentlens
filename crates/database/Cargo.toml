@@ -10,6 +10,7 @@ repository.workspace = true
 agentlens-domain = { workspace = true }
 agentlens-config = { workspace = true }
 agentlens-observability = { workspace = true }
+agentlens-telemetry = { workspace = true }
 sqlx = { workspace = true }
 tokio = { workspace = true }
 thiserror = { workspace = true }

@@ -22,6 +22,40 @@ paths:
         '503':
           description: Service is unavailable or database is disconnected
 
+  /v1/traces:
+    post:
+      summary: OpenTelemetry OTLP trace receiver
+      description: Ingests OTLP traces (protobuf or JSON, optionally gzip-compressed). Authenticates via project-scoped API key.
+      security:
+        - IngestionApiKey: []
+      requestBody:
+        required: true
+        content:
+          application/x-protobuf:
+            schema:
+              type: string
+              format: binary
+          application/json:
+            schema:
+              type: object
+      responses:
+        '200':
+          description: Traces, spans, events, links, token usages, and outbox job persisted atomically
+          content:
+            application/x-protobuf:
+              schema:
+                type: string
+                format: binary
+            application/json:
+              schema:
+                type: object
+        '400':
+          description: Malformed protobuf or JSON payload
+        '401':
+          description: Invalid, revoked, or expired ingestion API key
+        '413':
+          description: Decompressed payload exceeds 16 MiB size limit
+
   /api/v1/auth/bootstrap:
     post:
       summary: First-owner atomic bootstrap

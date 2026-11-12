@@ -6,6 +6,7 @@
 pub mod auth;
 pub mod middleware;
 pub mod organizations;
+pub mod otlp;
 pub mod projects;
 
 use agentlens_config::AppConfig;
@@ -88,6 +89,7 @@ pub fn create_router(state: AppState) -> Router {
     let public_routes = Router::new()
         .route("/health/live", get(health_live_handler))
         .route("/health/ready", get(health_ready_handler))
+        .route("/v1/traces", post(otlp::otlp_traces_handler))
         .route("/api/v1/auth/bootstrap", post(auth::bootstrap_handler))
         .route("/api/v1/auth/login", post(auth::login_handler))
         .route("/api/v1/auth/oidc/start", get(auth::oidc_start_handler))
@@ -217,6 +219,23 @@ mod tests {
                 Request::builder()
                     .method("GET")
                     .uri("/api/v1/organizations")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn test_otlp_unauthenticated_rejected() {
+        let app = create_router(AppState::default());
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/v1/traces")
                     .body(Body::empty())
                     .unwrap(),
             )
