@@ -15,6 +15,11 @@ agentlens-database = { workspace = true }
 agentlens-auth = { workspace = true }
 agentlens-organizations = { workspace = true }
 agentlens-projects = { workspace = true }
+agentlens-telemetry = { workspace = true }
+agentlens-traces = { workspace = true }
+agentlens-privacy = { workspace = true }
+prost = { workspace = true }
+opentelemetry-proto = { workspace = true }
 axum = { workspace = true }
 tokio = { workspace = true }
 tower = { workspace = true }
@@ -25,4 +30,10 @@ thiserror = { workspace = true }
 uuid = { workspace = true }
 chrono = { workspace = true }
 subtle = { workspace = true }
+flate2 = { workspace = true }
+
+[dev-dependencies]
+hex = { workspace = true }
+sqlx = { workspace = true }
+
 
