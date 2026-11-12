@@ -6,11 +6,13 @@
 use agentlens_config::AppConfig;
 use agentlens_domain::{
     Agent, ApiKey, AuditLog, Environment, OrgRole, Organization, OrganizationMember, OutboxJob,
-    Project, Span, SpanId, TokenUsage, Trace, TraceId, TraceStatus, User,
+    Project, Span, SpanId, SpanType, TokenUsage, Trace, TraceId, TraceStatus, User,
 };
+use agentlens_telemetry::NormalizedSpan;
 use chrono::{DateTime, Utc};
 use sqlx::postgres::{PgPool, PgPoolOptions, PgRow};
 use sqlx::Row;
+use std::collections::HashMap;
 use std::str::FromStr;
 use std::time::Duration;
 use thiserror::Error;
@@ -1352,6 +1354,309 @@ impl<'a> TracesRepository<'a> {
         Ok(())
     }
 
+    /// Ingests a batch of normalized spans inside a single atomic PostgreSQL transaction.
+    /// Preserves LEAST(started_at) and GREATEST(ended_at), reconciles root span metadata,
+    /// upserts agents/sessions/spans/events/links/usages, and writes outbox_jobs.
+    #[allow(clippy::too_many_lines)]
+    pub async fn persist_batch(
+        &self,
+        org_id: Uuid,
+        project_id: Uuid,
+        env_id: Uuid,
+        spans: &[NormalizedSpan],
+    ) -> Result<Vec<String>, DatabaseError> {
+        let mut tx = self.pool.begin().await?;
+
+        // 1. Upsert agents & sessions
+        let mut agent_ids: HashMap<String, Uuid> = HashMap::new();
+        for span in spans {
+            if let Some(ref agent_name) = span.agent_name {
+                if !agent_ids.contains_key(agent_name) {
+                    let agent_id: Uuid = sqlx::query(
+                        r#"
+                        INSERT INTO agents (organization_id, project_id, name, last_seen_at)
+                        VALUES ($1, $2, $3, now())
+                        ON CONFLICT (project_id, name) DO UPDATE SET last_seen_at = now()
+                        RETURNING id
+                        "#,
+                    )
+                    .bind(org_id)
+                    .bind(project_id)
+                    .bind(agent_name)
+                    .map(|r: PgRow| r.get("id"))
+                    .fetch_one(&mut *tx)
+                    .await?;
+
+                    agent_ids.insert(agent_name.clone(), agent_id);
+
+                    if let Some(ref ver) = span.agent_version {
+                        sqlx::query(
+                            r#"
+                            INSERT INTO agent_versions (project_id, agent_id, version)
+                            VALUES ($1, $2, $3)
+                            ON CONFLICT (agent_id, version) DO NOTHING
+                            "#,
+                        )
+                        .bind(project_id)
+                        .bind(agent_id)
+                        .bind(ver)
+                        .execute(&mut *tx)
+                        .await?;
+                    }
+                }
+            }
+
+            if let Some(ref session_id) = span.session_id {
+                sqlx::query(
+                    r#"
+                    INSERT INTO sessions (organization_id, project_id, external_session_id, last_seen_at)
+                    VALUES ($1, $2, $3, now())
+                    ON CONFLICT (project_id, external_session_id) DO UPDATE SET last_seen_at = now()
+                    "#,
+                )
+                .bind(org_id)
+                .bind(project_id)
+                .bind(session_id)
+                .execute(&mut *tx)
+                .await?;
+            }
+        }
+
+        // 2. Group spans by trace_id and upsert traces
+        let mut trace_groups: HashMap<String, Vec<&NormalizedSpan>> = HashMap::new();
+        for span in spans {
+            trace_groups
+                .entry(span.trace_id.as_str().to_string())
+                .or_default()
+                .push(span);
+        }
+
+        let mut affected_trace_ids = Vec::with_capacity(trace_groups.len());
+
+        for (trace_id_str, t_spans) in &trace_groups {
+            affected_trace_ids.push(trace_id_str.clone());
+
+            let min_start = t_spans.iter().map(|s| s.started_at).min().unwrap();
+            let max_end = t_spans.iter().filter_map(|s| s.ended_at).max();
+            let root_span = t_spans.iter().find(|s| s.parent_span_id.is_none());
+
+            if let Some(root) = root_span {
+                let root_sid = root.span_id.as_str();
+                let status_str = root.status.as_str();
+                let agent_id = root
+                    .agent_name
+                    .as_ref()
+                    .and_then(|name| agent_ids.get(name))
+                    .copied();
+
+                sqlx::query(
+                    r#"
+                    INSERT INTO traces (
+                        organization_id, project_id, environment_id, trace_id,
+                        root_span_id, name, status, agent_id, started_at, ended_at
+                    ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+                    ON CONFLICT (project_id, trace_id) DO UPDATE SET
+                        started_at = LEAST(traces.started_at, EXCLUDED.started_at),
+                        ended_at = GREATEST(traces.ended_at, EXCLUDED.ended_at),
+                        root_span_id = COALESCE(EXCLUDED.root_span_id, traces.root_span_id),
+                        name = COALESCE(EXCLUDED.name, traces.name),
+                        status = CASE WHEN EXCLUDED.status != 'unset' THEN EXCLUDED.status ELSE traces.status END,
+                        agent_id = COALESCE(EXCLUDED.agent_id, traces.agent_id),
+                        updated_at = now()
+                    "#,
+                )
+                .bind(org_id)
+                .bind(project_id)
+                .bind(env_id)
+                .bind(trace_id_str)
+                .bind(root_sid)
+                .bind(&root.name)
+                .bind(status_str)
+                .bind(agent_id)
+                .bind(min_start)
+                .bind(max_end)
+                .execute(&mut *tx)
+                .await?;
+            } else {
+                let first_name = &t_spans[0].name;
+                sqlx::query(
+                    r#"
+                    INSERT INTO traces (
+                        organization_id, project_id, environment_id, trace_id,
+                        name, status, started_at, ended_at
+                    ) VALUES ($1, $2, $3, $4, $5, 'unset', $6, $7)
+                    ON CONFLICT (project_id, trace_id) DO UPDATE SET
+                        started_at = LEAST(traces.started_at, EXCLUDED.started_at),
+                        ended_at = GREATEST(traces.ended_at, EXCLUDED.ended_at),
+                        name = COALESCE(traces.name, EXCLUDED.name),
+                        updated_at = now()
+                    "#,
+                )
+                .bind(org_id)
+                .bind(project_id)
+                .bind(env_id)
+                .bind(trace_id_str)
+                .bind(first_name)
+                .bind(min_start)
+                .bind(max_end)
+                .execute(&mut *tx)
+                .await?;
+            }
+        }
+
+        // 3. Upsert spans, events, links, token usages
+        for span in spans {
+            let trace_id_str = span.trace_id.as_str();
+            let span_id_str = span.span_id.as_str();
+            let parent_sid_str = span.parent_span_id.as_ref().map(SpanId::as_str);
+            let span_type_str = span.span_type.as_str();
+            let status_str = span.status.as_str();
+            let agent_id = span
+                .agent_name
+                .as_ref()
+                .and_then(|name| agent_ids.get(name))
+                .copied();
+
+            sqlx::query(
+                r#"
+                INSERT INTO spans (
+                    organization_id, project_id, trace_id, span_id, parent_span_id,
+                    agent_id, name, span_type, status, started_at, ended_at, duration_ms,
+                    provider, model, tool_name, attributes, resource_attributes,
+                    scope_attributes, error
+                ) VALUES (
+                    $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12,
+                    $13, $14, $15, $16, $17, $18, $19
+                )
+                ON CONFLICT (project_id, trace_id, span_id) DO UPDATE SET
+                    ended_at = COALESCE(EXCLUDED.ended_at, spans.ended_at),
+                    duration_ms = COALESCE(EXCLUDED.duration_ms, spans.duration_ms),
+                    status = CASE WHEN EXCLUDED.status != 'unset' THEN EXCLUDED.status ELSE spans.status END,
+                    error = COALESCE(EXCLUDED.error, spans.error)
+                "#,
+            )
+            .bind(org_id)
+            .bind(project_id)
+            .bind(trace_id_str)
+            .bind(span_id_str)
+            .bind(parent_sid_str)
+            .bind(agent_id)
+            .bind(&span.name)
+            .bind(span_type_str)
+            .bind(status_str)
+            .bind(span.started_at)
+            .bind(span.ended_at)
+            .bind(span.duration_ms)
+            .bind(&span.provider)
+            .bind(&span.model)
+            .bind(&span.tool_name)
+            .bind(&span.attributes)
+            .bind(&span.resource_attributes)
+            .bind(&span.scope_attributes)
+            .bind(&span.error)
+            .execute(&mut *tx)
+            .await?;
+
+            for ev in &span.events {
+                sqlx::query(
+                    r#"
+                    INSERT INTO span_events (
+                        project_id, trace_id, span_id, event_index, event_name, occurred_at, attributes
+                    ) VALUES ($1, $2, $3, $4, $5, $6, $7)
+                    ON CONFLICT (project_id, trace_id, span_id, event_index) DO NOTHING
+                    "#,
+                )
+                .bind(project_id)
+                .bind(trace_id_str)
+                .bind(span_id_str)
+                .bind(ev.event_index)
+                .bind(&ev.event_name)
+                .bind(ev.occurred_at)
+                .bind(&ev.attributes)
+                .execute(&mut *tx)
+                .await?;
+            }
+
+            for link in &span.links {
+                sqlx::query(
+                    r#"
+                    INSERT INTO span_links (
+                        project_id, trace_id, span_id, link_index, linked_trace_id, linked_span_id, attributes
+                    ) VALUES ($1, $2, $3, $4, $5, $6, $7)
+                    ON CONFLICT (project_id, trace_id, span_id, link_index) DO NOTHING
+                    "#,
+                )
+                .bind(project_id)
+                .bind(trace_id_str)
+                .bind(span_id_str)
+                .bind(link.link_index)
+                .bind(&link.linked_trace_id)
+                .bind(&link.linked_span_id)
+                .bind(&link.attributes)
+                .execute(&mut *tx)
+                .await?;
+            }
+
+            if let Some(ref u) = span.usage {
+                sqlx::query(
+                    r#"
+                    INSERT INTO token_usages (
+                        organization_id, project_id, trace_id, span_id, provider, model,
+                        input_tokens, output_tokens, cached_input_tokens, reasoning_tokens,
+                        usage_source, recorded_at
+                    ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, 'provider_reported', $11)
+                    ON CONFLICT (project_id, trace_id, span_id) DO UPDATE SET
+                        input_tokens = EXCLUDED.input_tokens,
+                        output_tokens = EXCLUDED.output_tokens,
+                        cached_input_tokens = EXCLUDED.cached_input_tokens,
+                        reasoning_tokens = EXCLUDED.reasoning_tokens
+                    "#,
+                )
+                .bind(org_id)
+                .bind(project_id)
+                .bind(trace_id_str)
+                .bind(span_id_str)
+                .bind(&u.provider)
+                .bind(&u.model)
+                .bind(u.input_tokens)
+                .bind(u.output_tokens)
+                .bind(u.cached_input_tokens)
+                .bind(u.reasoning_tokens)
+                .bind(span.started_at)
+                .execute(&mut *tx)
+                .await?;
+            }
+        }
+
+        // 4. Insert transactional outbox jobs
+        for trace_id_str in &affected_trace_ids {
+            let dedup = format!("trace_ingested:{project_id}:{trace_id_str}");
+            let payload = serde_json::json!({
+                "organization_id": org_id,
+                "project_id": project_id,
+                "trace_id": trace_id_str
+            });
+
+            sqlx::query(
+                r#"
+                INSERT INTO outbox_jobs (
+                    organization_id, project_id, job_type, dedup_key, payload, status, available_at
+                ) VALUES ($1, $2, 'trace_ingested', $3, $4, 'pending', now())
+                ON CONFLICT (dedup_key) DO NOTHING
+                "#,
+            )
+            .bind(org_id)
+            .bind(project_id)
+            .bind(&dedup)
+            .bind(payload)
+            .execute(&mut *tx)
+            .await?;
+        }
+
+        tx.commit().await?;
+        Ok(affected_trace_ids)
+    }
+
     pub async fn get_by_trace_id(
         &self,
         project_id: Uuid,
@@ -1515,6 +1820,86 @@ impl<'a> SpansRepository<'a> {
         .await?;
 
         Ok(row)
+    }
+
+    pub async fn list_for_trace(
+        &self,
+        project_id: Uuid,
+        trace_id: &TraceId,
+    ) -> Result<Vec<Span>, DatabaseError> {
+        let trace_id_str = trace_id.as_str();
+        let rows = sqlx::query(
+            r#"
+            SELECT id, organization_id, project_id, trace_id, span_id, parent_span_id,
+                   agent_id, name, span_type, status, started_at, ended_at, duration_ms,
+                   provider, model, tool_name, attributes, resource_attributes,
+                   scope_attributes, payload_s3_key, error, received_at, created_at
+            FROM spans
+            WHERE project_id = $1 AND trace_id = $2
+            ORDER BY started_at ASC
+            "#,
+        )
+        .bind(project_id)
+        .bind(trace_id_str)
+        .fetch_all(self.pool)
+        .await?;
+
+        let mut spans = Vec::with_capacity(rows.len());
+        for r in rows {
+            let tid_raw: String = r.get("trace_id");
+            let parsed_trace_id =
+                TraceId::new(tid_raw).map_err(|e| DatabaseError::NotFound(e.to_string()))?;
+
+            let sid_raw: String = r.get("span_id");
+            let parsed_span_id =
+                SpanId::new(sid_raw).map_err(|e| DatabaseError::NotFound(e.to_string()))?;
+
+            let parent_sid_raw: Option<String> = r.get("parent_span_id");
+            let parsed_parent_span_id = match parent_sid_raw {
+                Some(sid) => {
+                    Some(SpanId::new(sid).map_err(|e| DatabaseError::NotFound(e.to_string()))?)
+                }
+                None => None,
+            };
+
+            let span_type_raw: String = r.get("span_type");
+            let span_type = span_type_raw
+                .parse::<SpanType>()
+                .unwrap_or(SpanType::Custom);
+
+            let status_raw: String = r.get("status");
+            let status = status_raw
+                .parse::<TraceStatus>()
+                .unwrap_or(TraceStatus::Unset);
+
+            spans.push(Span {
+                id: r.get("id"),
+                organization_id: r.get("organization_id"),
+                project_id: r.get("project_id"),
+                trace_id: parsed_trace_id,
+                span_id: parsed_span_id,
+                parent_span_id: parsed_parent_span_id,
+                agent_id: r.get("agent_id"),
+                name: r.get("name"),
+                span_type,
+                status,
+                started_at: r.get("started_at"),
+                ended_at: r.get("ended_at"),
+                duration_ms: r.get("duration_ms"),
+                provider: r.get("provider"),
+                model: r.get("model"),
+                tool_name: r.get("tool_name"),
+                attributes: r.get("attributes"),
+                resource_attributes: r.get("resource_attributes"),
+                scope_attributes: r.get("scope_attributes"),
+                payload_s3_key: r.get("payload_s3_key"),
+                error: r.get("error"),
+                received_at: r.get("received_at"),
+                created_at: r.get("created_at"),
+            });
+        }
+
+        Ok(spans)
     }
 }
 
