@@ -4,6 +4,7 @@ import Link from "next/link";
 import { usePathname } from "next/navigation";
 import {
   Activity,
+  BarChart3,
   Bot,
   Key,
   Layers,
@@ -14,6 +15,7 @@ import {
 
 const NAV_ITEMS = [
   { name: "Overview", href: "/", icon: LayoutDashboard },
+  { name: "Analytics", href: "/analytics", icon: BarChart3 },
   { name: "Traces", href: "/traces", icon: Activity },
   { name: "Agents", href: "/agents", icon: Bot },
   { name: "Sessions", href: "/sessions", icon: MessagesSquare },
