@@ -5,11 +5,10 @@
 
 use agentlens_config::AppConfig;
 use agentlens_domain::{
-    Agent, Environment, Organization, OutboxJob, Project, Span, SpanId, SpanType, TokenUsage,
-    Trace, TraceId, TraceStatus, UsageSource,
+    Agent, Environment, Organization, OutboxJob, Project, Span, SpanId, TokenUsage, Trace, TraceId,
+    TraceStatus,
 };
 use chrono::{DateTime, Utc};
-use rust_decimal::Decimal;
 use sqlx::postgres::{PgPool, PgPoolOptions, PgRow};
 use sqlx::Row;
 use std::time::Duration;
