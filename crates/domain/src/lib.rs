@@ -232,6 +232,36 @@ impl OrgRole {
             Self::Viewer => "viewer",
         }
     }
+
+    #[must_use]
+    pub fn can_manage_organization(&self) -> bool {
+        matches!(self, Self::Owner)
+    }
+
+    #[must_use]
+    pub fn can_manage_members(&self) -> bool {
+        matches!(self, Self::Owner)
+    }
+
+    #[must_use]
+    pub fn can_manage_projects(&self) -> bool {
+        matches!(self, Self::Owner | Self::Admin)
+    }
+
+    #[must_use]
+    pub fn can_manage_api_keys(&self) -> bool {
+        matches!(self, Self::Owner | Self::Admin)
+    }
+
+    #[must_use]
+    pub fn can_manage_alerts(&self) -> bool {
+        matches!(self, Self::Owner | Self::Admin)
+    }
+
+    #[must_use]
+    pub fn can_mutate(&self) -> bool {
+        !matches!(self, Self::Viewer)
+    }
 }
 
 impl FromStr for OrgRole {
@@ -336,6 +366,21 @@ pub struct ApiKey {
     pub last_used_at: Option<DateTime<Utc>>,
     pub expires_at: Option<DateTime<Utc>>,
     pub revoked_at: Option<DateTime<Utc>>,
+    pub created_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AuditLog {
+    pub id: Uuid,
+    pub organization_id: Uuid,
+    pub actor_user_id: Option<Uuid>,
+    pub actor_api_key_id: Option<Uuid>,
+    pub action: String,
+    pub resource_type: String,
+    pub resource_id: Option<String>,
+    pub ip_address: Option<String>,
+    pub user_agent: Option<String>,
+    pub metadata: serde_json::Value,
     pub created_at: DateTime<Utc>,
 }
 

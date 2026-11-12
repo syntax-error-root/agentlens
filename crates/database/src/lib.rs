@@ -5,12 +5,13 @@
 
 use agentlens_config::AppConfig;
 use agentlens_domain::{
-    Agent, Environment, Organization, OutboxJob, Project, Span, SpanId, TokenUsage, Trace, TraceId,
-    TraceStatus,
+    Agent, ApiKey, AuditLog, Environment, OrgRole, Organization, OrganizationMember, OutboxJob,
+    Project, Span, SpanId, TokenUsage, Trace, TraceId, TraceStatus, User,
 };
 use chrono::{DateTime, Utc};
 use sqlx::postgres::{PgPool, PgPoolOptions, PgRow};
 use sqlx::Row;
+use std::str::FromStr;
 use std::time::Duration;
 use thiserror::Error;
 use uuid::Uuid;
@@ -23,6 +24,8 @@ pub enum DatabaseError {
     Migration(#[from] sqlx::migrate::MigrateError),
     #[error("Entity not found: {0}")]
     NotFound(String),
+    #[error("Bootstrap has already been completed")]
+    BootstrapAlreadyCompleted,
 }
 
 pub type DbPool = PgPool;
@@ -108,6 +111,335 @@ impl<'a> OrganizationsRepository<'a> {
         .await?;
 
         Ok(row)
+    }
+
+    pub async fn get_by_slug(&self, slug: &str) -> Result<Option<Organization>, DatabaseError> {
+        let row = sqlx::query(
+            r#"
+            SELECT id, name, slug, created_at, updated_at
+            FROM organizations
+            WHERE slug = $1
+            "#,
+        )
+        .bind(slug)
+        .map(|r: PgRow| Organization {
+            id: r.get("id"),
+            name: r.get("name"),
+            slug: r.get("slug"),
+            created_at: r.get("created_at"),
+            updated_at: r.get("updated_at"),
+        })
+        .fetch_optional(self.pool)
+        .await?;
+
+        Ok(row)
+    }
+
+    pub async fn update(&self, id: Uuid, name: &str) -> Result<Organization, DatabaseError> {
+        let row = sqlx::query(
+            r#"
+            UPDATE organizations
+            SET name = $2, updated_at = now()
+            WHERE id = $1
+            RETURNING id, name, slug, created_at, updated_at
+            "#,
+        )
+        .bind(id)
+        .bind(name)
+        .map(|r: PgRow| Organization {
+            id: r.get("id"),
+            name: r.get("name"),
+            slug: r.get("slug"),
+            created_at: r.get("created_at"),
+            updated_at: r.get("updated_at"),
+        })
+        .fetch_optional(self.pool)
+        .await?
+        .ok_or_else(|| DatabaseError::NotFound(format!("Organization {id} not found")))?;
+
+        Ok(row)
+    }
+
+    pub async fn list_for_user(
+        &self,
+        user_id: Uuid,
+    ) -> Result<Vec<(Organization, OrgRole)>, DatabaseError> {
+        let rows = sqlx::query(
+            r#"
+            SELECT o.id, o.name, o.slug, o.created_at, o.updated_at, m.role
+            FROM organizations o
+            JOIN organization_members m ON o.id = m.organization_id
+            WHERE m.user_id = $1
+            ORDER BY o.name ASC
+            "#,
+        )
+        .bind(user_id)
+        .map(|r: PgRow| {
+            let role_str: String = r.get("role");
+            let role = OrgRole::from_str(&role_str).unwrap_or(OrgRole::Viewer);
+            let org = Organization {
+                id: r.get("id"),
+                name: r.get("name"),
+                slug: r.get("slug"),
+                created_at: r.get("created_at"),
+                updated_at: r.get("updated_at"),
+            };
+            (org, role)
+        })
+        .fetch_all(self.pool)
+        .await?;
+
+        Ok(rows)
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Users Repository
+// ---------------------------------------------------------------------------
+
+pub struct UsersRepository<'a> {
+    pool: &'a DbPool,
+}
+
+impl<'a> UsersRepository<'a> {
+    pub fn new(pool: &'a DbPool) -> Self {
+        Self { pool }
+    }
+
+    pub async fn count(&self) -> Result<i64, DatabaseError> {
+        let row = sqlx::query(r#"SELECT COUNT(*) as count FROM users"#)
+            .map(|r: PgRow| r.get::<i64, _>("count"))
+            .fetch_one(self.pool)
+            .await?;
+        Ok(row)
+    }
+
+    pub async fn create(
+        &self,
+        email: &str,
+        password_hash: Option<&str>,
+        display_name: Option<&str>,
+    ) -> Result<User, DatabaseError> {
+        let row = sqlx::query(
+            r#"
+            INSERT INTO users (email, password_hash, display_name, status)
+            VALUES ($1, $2, $3, 'active')
+            RETURNING id, email, password_hash, oidc_subject, oidc_issuer,
+                      display_name, status, created_at, updated_at
+            "#,
+        )
+        .bind(email)
+        .bind(password_hash)
+        .bind(display_name)
+        .map(|r: PgRow| User {
+            id: r.get("id"),
+            email: r.get("email"),
+            password_hash: r.get("password_hash"),
+            oidc_subject: r.get("oidc_subject"),
+            oidc_issuer: r.get("oidc_issuer"),
+            display_name: r.get("display_name"),
+            status: r.get("status"),
+            created_at: r.get("created_at"),
+            updated_at: r.get("updated_at"),
+        })
+        .fetch_one(self.pool)
+        .await?;
+
+        Ok(row)
+    }
+
+    pub async fn get_by_id(&self, id: Uuid) -> Result<Option<User>, DatabaseError> {
+        let row = sqlx::query(
+            r#"
+            SELECT id, email, password_hash, oidc_subject, oidc_issuer,
+                   display_name, status, created_at, updated_at
+            FROM users
+            WHERE id = $1
+            "#,
+        )
+        .bind(id)
+        .map(|r: PgRow| User {
+            id: r.get("id"),
+            email: r.get("email"),
+            password_hash: r.get("password_hash"),
+            oidc_subject: r.get("oidc_subject"),
+            oidc_issuer: r.get("oidc_issuer"),
+            display_name: r.get("display_name"),
+            status: r.get("status"),
+            created_at: r.get("created_at"),
+            updated_at: r.get("updated_at"),
+        })
+        .fetch_optional(self.pool)
+        .await?;
+
+        Ok(row)
+    }
+
+    pub async fn get_by_email(&self, email: &str) -> Result<Option<User>, DatabaseError> {
+        let row = sqlx::query(
+            r#"
+            SELECT id, email, password_hash, oidc_subject, oidc_issuer,
+                   display_name, status, created_at, updated_at
+            FROM users
+            WHERE email = $1
+            "#,
+        )
+        .bind(email)
+        .map(|r: PgRow| User {
+            id: r.get("id"),
+            email: r.get("email"),
+            password_hash: r.get("password_hash"),
+            oidc_subject: r.get("oidc_subject"),
+            oidc_issuer: r.get("oidc_issuer"),
+            display_name: r.get("display_name"),
+            status: r.get("status"),
+            created_at: r.get("created_at"),
+            updated_at: r.get("updated_at"),
+        })
+        .fetch_optional(self.pool)
+        .await?;
+
+        Ok(row)
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Organization Members Repository
+// ---------------------------------------------------------------------------
+
+pub struct OrganizationMembersRepository<'a> {
+    pool: &'a DbPool,
+}
+
+impl<'a> OrganizationMembersRepository<'a> {
+    pub fn new(pool: &'a DbPool) -> Self {
+        Self { pool }
+    }
+
+    pub async fn add(
+        &self,
+        org_id: Uuid,
+        user_id: Uuid,
+        role: OrgRole,
+    ) -> Result<OrganizationMember, DatabaseError> {
+        let row = sqlx::query(
+            r#"
+            INSERT INTO organization_members (organization_id, user_id, role)
+            VALUES ($1, $2, $3)
+            ON CONFLICT (organization_id, user_id) DO UPDATE SET role = EXCLUDED.role
+            RETURNING organization_id, user_id, role, created_at
+            "#,
+        )
+        .bind(org_id)
+        .bind(user_id)
+        .bind(role.as_str())
+        .map(|r: PgRow| {
+            let role_str: String = r.get("role");
+            OrganizationMember {
+                organization_id: r.get("organization_id"),
+                user_id: r.get("user_id"),
+                role: OrgRole::from_str(&role_str).unwrap_or(OrgRole::Viewer),
+                created_at: r.get("created_at"),
+            }
+        })
+        .fetch_one(self.pool)
+        .await?;
+
+        Ok(row)
+    }
+
+    pub async fn get_role(
+        &self,
+        org_id: Uuid,
+        user_id: Uuid,
+    ) -> Result<Option<OrgRole>, DatabaseError> {
+        let row = sqlx::query(
+            r#"
+            SELECT role FROM organization_members
+            WHERE organization_id = $1 AND user_id = $2
+            "#,
+        )
+        .bind(org_id)
+        .bind(user_id)
+        .map(|r: PgRow| {
+            let role_str: String = r.get("role");
+            OrgRole::from_str(&role_str).unwrap_or(OrgRole::Viewer)
+        })
+        .fetch_optional(self.pool)
+        .await?;
+
+        Ok(row)
+    }
+
+    pub async fn list_members(&self, org_id: Uuid) -> Result<Vec<(User, OrgRole)>, DatabaseError> {
+        let rows = sqlx::query(
+            r#"
+            SELECT u.id, u.email, u.password_hash, u.oidc_subject, u.oidc_issuer,
+                   u.display_name, u.status, u.created_at, u.updated_at, m.role
+            FROM users u
+            JOIN organization_members m ON u.id = m.user_id
+            WHERE m.organization_id = $1
+            ORDER BY u.email ASC
+            "#,
+        )
+        .bind(org_id)
+        .map(|r: PgRow| {
+            let role_str: String = r.get("role");
+            let role = OrgRole::from_str(&role_str).unwrap_or(OrgRole::Viewer);
+            let user = User {
+                id: r.get("id"),
+                email: r.get("email"),
+                password_hash: r.get("password_hash"),
+                oidc_subject: r.get("oidc_subject"),
+                oidc_issuer: r.get("oidc_issuer"),
+                display_name: r.get("display_name"),
+                status: r.get("status"),
+                created_at: r.get("created_at"),
+                updated_at: r.get("updated_at"),
+            };
+            (user, role)
+        })
+        .fetch_all(self.pool)
+        .await?;
+
+        Ok(rows)
+    }
+
+    pub async fn update_role(
+        &self,
+        org_id: Uuid,
+        user_id: Uuid,
+        role: OrgRole,
+    ) -> Result<(), DatabaseError> {
+        sqlx::query(
+            r#"
+            UPDATE organization_members
+            SET role = $3
+            WHERE organization_id = $1 AND user_id = $2
+            "#,
+        )
+        .bind(org_id)
+        .bind(user_id)
+        .bind(role.as_str())
+        .execute(self.pool)
+        .await?;
+
+        Ok(())
+    }
+
+    pub async fn remove(&self, org_id: Uuid, user_id: Uuid) -> Result<(), DatabaseError> {
+        sqlx::query(
+            r#"
+            DELETE FROM organization_members
+            WHERE organization_id = $1 AND user_id = $2
+            "#,
+        )
+        .bind(org_id)
+        .bind(user_id)
+        .execute(self.pool)
+        .await?;
+
+        Ok(())
     }
 }
 
@@ -227,6 +559,76 @@ impl<'a> ProjectsRepository<'a> {
 
         Ok(row)
     }
+
+    pub async fn list_for_org(&self, org_id: Uuid) -> Result<Vec<Project>, DatabaseError> {
+        let rows = sqlx::query(
+            r#"
+            SELECT id, organization_id, name, slug, description,
+                   capture_content_default, redaction_rules, retention_days,
+                   created_at, updated_at
+            FROM projects
+            WHERE organization_id = $1
+            ORDER BY name ASC
+            "#,
+        )
+        .bind(org_id)
+        .map(|r: PgRow| Project {
+            id: r.get("id"),
+            organization_id: r.get("organization_id"),
+            name: r.get("name"),
+            slug: r.get("slug"),
+            description: r.get("description"),
+            capture_content_default: r.get("capture_content_default"),
+            redaction_rules: r.get("redaction_rules"),
+            retention_days: r.get("retention_days"),
+            created_at: r.get("created_at"),
+            updated_at: r.get("updated_at"),
+        })
+        .fetch_all(self.pool)
+        .await?;
+
+        Ok(rows)
+    }
+
+    pub async fn update(
+        &self,
+        project_id: Uuid,
+        name: &str,
+        description: Option<&str>,
+        retention_days: i32,
+    ) -> Result<Project, DatabaseError> {
+        let row = sqlx::query(
+            r#"
+            UPDATE projects
+            SET name = $2, description = $3, retention_days = $4, updated_at = now()
+            WHERE id = $1
+            RETURNING id, organization_id, name, slug, description,
+                      capture_content_default, redaction_rules, retention_days,
+                      created_at, updated_at
+            "#,
+        )
+        .bind(project_id)
+        .bind(name)
+        .bind(description)
+        .bind(retention_days)
+        .map(|r: PgRow| Project {
+            id: r.get("id"),
+            organization_id: r.get("organization_id"),
+            name: r.get("name"),
+            slug: r.get("slug"),
+            description: r.get("description"),
+            capture_content_default: r.get("capture_content_default"),
+            redaction_rules: r.get("redaction_rules"),
+            retention_days: r.get("retention_days"),
+            created_at: r.get("created_at"),
+            updated_at: r.get("updated_at"),
+        })
+        .fetch_optional(self.pool)
+        .await?
+        .ok_or_else(|| DatabaseError::NotFound(format!("Project {project_id} not found")))?;
+
+        Ok(row)
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -295,6 +697,478 @@ impl<'a> EnvironmentsRepository<'a> {
         .await?;
 
         Ok(row)
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Api Keys Repository
+// ---------------------------------------------------------------------------
+
+pub struct ApiKeysRepository<'a> {
+    pool: &'a DbPool,
+}
+
+impl<'a> ApiKeysRepository<'a> {
+    pub fn new(pool: &'a DbPool) -> Self {
+        Self { pool }
+    }
+
+    pub async fn create(
+        &self,
+        org_id: Uuid,
+        project_id: Uuid,
+        environment_id: Uuid,
+        name: &str,
+        key_prefix: &str,
+        key_hash: &[u8],
+        scopes: serde_json::Value,
+        expires_at: Option<DateTime<Utc>>,
+    ) -> Result<ApiKey, DatabaseError> {
+        let row = sqlx::query(
+            r#"
+            INSERT INTO api_keys (
+                organization_id, project_id, environment_id,
+                name, key_prefix, key_hash, scopes, expires_at
+            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+            RETURNING id, organization_id, project_id, environment_id,
+                      name, key_prefix, key_hash, scopes,
+                      last_used_at, expires_at, revoked_at, created_at
+            "#,
+        )
+        .bind(org_id)
+        .bind(project_id)
+        .bind(environment_id)
+        .bind(name)
+        .bind(key_prefix)
+        .bind(key_hash)
+        .bind(scopes)
+        .bind(expires_at)
+        .map(|r: PgRow| ApiKey {
+            id: r.get("id"),
+            organization_id: r.get("organization_id"),
+            project_id: r.get("project_id"),
+            environment_id: r.get("environment_id"),
+            name: r.get("name"),
+            key_prefix: r.get("key_prefix"),
+            key_hash: r.get("key_hash"),
+            scopes: r.get("scopes"),
+            last_used_at: r.get("last_used_at"),
+            expires_at: r.get("expires_at"),
+            revoked_at: r.get("revoked_at"),
+            created_at: r.get("created_at"),
+        })
+        .fetch_one(self.pool)
+        .await?;
+
+        Ok(row)
+    }
+
+    pub async fn find_by_prefix(&self, prefix: &str) -> Result<Vec<ApiKey>, DatabaseError> {
+        let rows = sqlx::query(
+            r#"
+            SELECT id, organization_id, project_id, environment_id,
+                   name, key_prefix, key_hash, scopes,
+                   last_used_at, expires_at, revoked_at, created_at
+            FROM api_keys
+            WHERE key_prefix = $1 AND revoked_at IS NULL
+            "#,
+        )
+        .bind(prefix)
+        .map(|r: PgRow| ApiKey {
+            id: r.get("id"),
+            organization_id: r.get("organization_id"),
+            project_id: r.get("project_id"),
+            environment_id: r.get("environment_id"),
+            name: r.get("name"),
+            key_prefix: r.get("key_prefix"),
+            key_hash: r.get("key_hash"),
+            scopes: r.get("scopes"),
+            last_used_at: r.get("last_used_at"),
+            expires_at: r.get("expires_at"),
+            revoked_at: r.get("revoked_at"),
+            created_at: r.get("created_at"),
+        })
+        .fetch_all(self.pool)
+        .await?;
+
+        Ok(rows)
+    }
+
+    pub async fn get_by_id(&self, id: Uuid) -> Result<Option<ApiKey>, DatabaseError> {
+        let row = sqlx::query(
+            r#"
+            SELECT id, organization_id, project_id, environment_id,
+                   name, key_prefix, key_hash, scopes,
+                   last_used_at, expires_at, revoked_at, created_at
+            FROM api_keys
+            WHERE id = $1
+            "#,
+        )
+        .bind(id)
+        .map(|r: PgRow| ApiKey {
+            id: r.get("id"),
+            organization_id: r.get("organization_id"),
+            project_id: r.get("project_id"),
+            environment_id: r.get("environment_id"),
+            name: r.get("name"),
+            key_prefix: r.get("key_prefix"),
+            key_hash: r.get("key_hash"),
+            scopes: r.get("scopes"),
+            last_used_at: r.get("last_used_at"),
+            expires_at: r.get("expires_at"),
+            revoked_at: r.get("revoked_at"),
+            created_at: r.get("created_at"),
+        })
+        .fetch_optional(self.pool)
+        .await?;
+
+        Ok(row)
+    }
+
+    pub async fn list_for_project(&self, project_id: Uuid) -> Result<Vec<ApiKey>, DatabaseError> {
+        let rows = sqlx::query(
+            r#"
+            SELECT id, organization_id, project_id, environment_id,
+                   name, key_prefix, key_hash, scopes,
+                   last_used_at, expires_at, revoked_at, created_at
+            FROM api_keys
+            WHERE project_id = $1
+            ORDER BY created_at DESC
+            "#,
+        )
+        .bind(project_id)
+        .map(|r: PgRow| ApiKey {
+            id: r.get("id"),
+            organization_id: r.get("organization_id"),
+            project_id: r.get("project_id"),
+            environment_id: r.get("environment_id"),
+            name: r.get("name"),
+            key_prefix: r.get("key_prefix"),
+            key_hash: r.get("key_hash"),
+            scopes: r.get("scopes"),
+            last_used_at: r.get("last_used_at"),
+            expires_at: r.get("expires_at"),
+            revoked_at: r.get("revoked_at"),
+            created_at: r.get("created_at"),
+        })
+        .fetch_all(self.pool)
+        .await?;
+
+        Ok(rows)
+    }
+
+    pub async fn revoke(&self, id: Uuid) -> Result<(), DatabaseError> {
+        sqlx::query(
+            r#"
+            UPDATE api_keys
+            SET revoked_at = now()
+            WHERE id = $1 AND revoked_at IS NULL
+            "#,
+        )
+        .bind(id)
+        .execute(self.pool)
+        .await?;
+
+        Ok(())
+    }
+
+    pub async fn touch_last_used(&self, id: Uuid) -> Result<(), DatabaseError> {
+        sqlx::query(
+            r#"
+            UPDATE api_keys
+            SET last_used_at = now()
+            WHERE id = $1
+            "#,
+        )
+        .bind(id)
+        .execute(self.pool)
+        .await?;
+
+        Ok(())
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Audit Logs Repository
+// ---------------------------------------------------------------------------
+
+pub struct AuditLogsRepository<'a> {
+    pool: &'a DbPool,
+}
+
+impl<'a> AuditLogsRepository<'a> {
+    pub fn new(pool: &'a DbPool) -> Self {
+        Self { pool }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub async fn record(
+        &self,
+        org_id: Uuid,
+        actor_user_id: Option<Uuid>,
+        actor_api_key_id: Option<Uuid>,
+        action: &str,
+        resource_type: &str,
+        resource_id: Option<&str>,
+        ip_address: Option<&str>,
+        user_agent: Option<&str>,
+        metadata: serde_json::Value,
+    ) -> Result<AuditLog, DatabaseError> {
+        let row = sqlx::query(
+            r#"
+            INSERT INTO audit_logs (
+                organization_id, actor_user_id, actor_api_key_id,
+                action, resource_type, resource_id, ip_address, user_agent, metadata
+            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+            RETURNING id, organization_id, actor_user_id, actor_api_key_id,
+                      action, resource_type, resource_id, ip_address, user_agent,
+                      metadata, created_at
+            "#,
+        )
+        .bind(org_id)
+        .bind(actor_user_id)
+        .bind(actor_api_key_id)
+        .bind(action)
+        .bind(resource_type)
+        .bind(resource_id)
+        .bind(ip_address)
+        .bind(user_agent)
+        .bind(metadata)
+        .map(|r: PgRow| AuditLog {
+            id: r.get("id"),
+            organization_id: r.get("organization_id"),
+            actor_user_id: r.get("actor_user_id"),
+            actor_api_key_id: r.get("actor_api_key_id"),
+            action: r.get("action"),
+            resource_type: r.get("resource_type"),
+            resource_id: r.get("resource_id"),
+            ip_address: r.get("ip_address"),
+            user_agent: r.get("user_agent"),
+            metadata: r.get("metadata"),
+            created_at: r.get("created_at"),
+        })
+        .fetch_one(self.pool)
+        .await?;
+
+        Ok(row)
+    }
+
+    pub async fn list_for_org(
+        &self,
+        org_id: Uuid,
+        limit: i64,
+    ) -> Result<Vec<AuditLog>, DatabaseError> {
+        let rows = sqlx::query(
+            r#"
+            SELECT id, organization_id, actor_user_id, actor_api_key_id,
+                   action, resource_type, resource_id, ip_address, user_agent,
+                   metadata, created_at
+            FROM audit_logs
+            WHERE organization_id = $1
+            ORDER BY created_at DESC
+            LIMIT $2
+            "#,
+        )
+        .bind(org_id)
+        .bind(limit)
+        .map(|r: PgRow| AuditLog {
+            id: r.get("id"),
+            organization_id: r.get("organization_id"),
+            actor_user_id: r.get("actor_user_id"),
+            actor_api_key_id: r.get("actor_api_key_id"),
+            action: r.get("action"),
+            resource_type: r.get("resource_type"),
+            resource_id: r.get("resource_id"),
+            ip_address: r.get("ip_address"),
+            user_agent: r.get("user_agent"),
+            metadata: r.get("metadata"),
+            created_at: r.get("created_at"),
+        })
+        .fetch_all(self.pool)
+        .await?;
+
+        Ok(rows)
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Bootstrap Repository
+// ---------------------------------------------------------------------------
+
+pub struct BootstrapRepository<'a> {
+    pool: &'a DbPool,
+}
+
+impl<'a> BootstrapRepository<'a> {
+    pub fn new(pool: &'a DbPool) -> Self {
+        Self { pool }
+    }
+
+    /// Atomically executes first-owner bootstrap guarded by a PostgreSQL advisory transaction lock.
+    /// If any user exists, returns `DatabaseError::BootstrapAlreadyCompleted`.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn execute(
+        &self,
+        email: &str,
+        password_hash: &str,
+        org_name: &str,
+        org_slug: &str,
+        default_project_name: &str,
+        ip_address: Option<&str>,
+        user_agent: Option<&str>,
+    ) -> Result<(User, Organization, Project, Vec<Environment>), DatabaseError> {
+        let mut tx = self.pool.begin().await?;
+
+        // 1. Acquire transaction advisory lock
+        sqlx::query("SELECT pg_advisory_xact_lock(hashtext('agentlens_bootstrap'))")
+            .execute(&mut *tx)
+            .await?;
+
+        // 2. Count existing users
+        let user_count: i64 = sqlx::query("SELECT COUNT(*) as count FROM users")
+            .map(|r: PgRow| r.get::<i64, _>("count"))
+            .fetch_one(&mut *tx)
+            .await?;
+
+        if user_count > 0 {
+            return Err(DatabaseError::BootstrapAlreadyCompleted);
+        }
+
+        // 3. Create user
+        let user = sqlx::query(
+            r#"
+            INSERT INTO users (email, password_hash, status)
+            VALUES ($1, $2, 'active')
+            RETURNING id, email, password_hash, oidc_subject, oidc_issuer,
+                      display_name, status, created_at, updated_at
+            "#,
+        )
+        .bind(email)
+        .bind(password_hash)
+        .map(|r: PgRow| User {
+            id: r.get("id"),
+            email: r.get("email"),
+            password_hash: r.get("password_hash"),
+            oidc_subject: r.get("oidc_subject"),
+            oidc_issuer: r.get("oidc_issuer"),
+            display_name: r.get("display_name"),
+            status: r.get("status"),
+            created_at: r.get("created_at"),
+            updated_at: r.get("updated_at"),
+        })
+        .fetch_one(&mut *tx)
+        .await?;
+
+        // 4. Create initial organization
+        let org = sqlx::query(
+            r#"
+            INSERT INTO organizations (name, slug)
+            VALUES ($1, $2)
+            RETURNING id, name, slug, created_at, updated_at
+            "#,
+        )
+        .bind(org_name)
+        .bind(org_slug)
+        .map(|r: PgRow| Organization {
+            id: r.get("id"),
+            name: r.get("name"),
+            slug: r.get("slug"),
+            created_at: r.get("created_at"),
+            updated_at: r.get("updated_at"),
+        })
+        .fetch_one(&mut *tx)
+        .await?;
+
+        // 5. Add user as organization owner
+        sqlx::query(
+            r#"
+            INSERT INTO organization_members (organization_id, user_id, role)
+            VALUES ($1, $2, 'owner')
+            "#,
+        )
+        .bind(org.id)
+        .bind(user.id)
+        .execute(&mut *tx)
+        .await?;
+
+        // 6. Create default project
+        let project = sqlx::query(
+            r#"
+            INSERT INTO projects (organization_id, name, slug, description)
+            VALUES ($1, $2, 'default', 'Default project created during bootstrap')
+            RETURNING id, organization_id, name, slug, description,
+                      capture_content_default, redaction_rules, retention_days,
+                      created_at, updated_at
+            "#,
+        )
+        .bind(org.id)
+        .bind(default_project_name)
+        .map(|r: PgRow| Project {
+            id: r.get("id"),
+            organization_id: r.get("organization_id"),
+            name: r.get("name"),
+            slug: r.get("slug"),
+            description: r.get("description"),
+            capture_content_default: r.get("capture_content_default"),
+            redaction_rules: r.get("redaction_rules"),
+            retention_days: r.get("retention_days"),
+            created_at: r.get("created_at"),
+            updated_at: r.get("updated_at"),
+        })
+        .fetch_one(&mut *tx)
+        .await?;
+
+        // 7. Create default environments (production, staging, development)
+        let env_specs = [
+            ("production", true),
+            ("staging", false),
+            ("development", false),
+        ];
+        let mut envs = Vec::with_capacity(3);
+        for (name, is_def) in env_specs {
+            let env = sqlx::query(
+                r#"
+                INSERT INTO environments (organization_id, project_id, name, is_default)
+                VALUES ($1, $2, $3, $4)
+                RETURNING id, organization_id, project_id, name, is_default, created_at
+                "#,
+            )
+            .bind(org.id)
+            .bind(project.id)
+            .bind(name)
+            .bind(is_def)
+            .map(|r: PgRow| Environment {
+                id: r.get("id"),
+                organization_id: r.get("organization_id"),
+                project_id: r.get("project_id"),
+                name: r.get("name"),
+                is_default: r.get("is_default"),
+                created_at: r.get("created_at"),
+            })
+            .fetch_one(&mut *tx)
+            .await?;
+            envs.push(env);
+        }
+
+        // 8. Record audit log
+        sqlx::query(
+            r#"
+            INSERT INTO audit_logs (
+                organization_id, actor_user_id, action, resource_type,
+                resource_id, ip_address, user_agent, metadata
+            ) VALUES ($1, $2, 'auth.bootstrap', 'organization', $3, $4, $5, '{}'::jsonb)
+            "#,
+        )
+        .bind(org.id)
+        .bind(user.id)
+        .bind(org.id.to_string())
+        .bind(ip_address)
+        .bind(user_agent)
+        .execute(&mut *tx)
+        .await?;
+
+        tx.commit().await?;
+        Ok((user, org, project, envs))
     }
 }
 

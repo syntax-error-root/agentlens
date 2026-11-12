@@ -34,7 +34,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     };
 
-    let state = AppState { db: db_pool };
+    let state = AppState {
+        db: db_pool,
+        config: config.clone(),
+    };
     let app = create_router(state);
 
     let api_addr: SocketAddr = config.server.api_bind_addr.parse().unwrap_or_else(|_| {

@@ -1,9 +1,12 @@
 use agentlens_config::AppConfig;
 use agentlens_database::{
-    create_pool, run_migrations, EnvironmentsRepository, OrganizationsRepository,
-    ProjectsRepository, SpansRepository, TokenUsagesRepository, TracesRepository,
+    create_pool, run_migrations, ApiKeysRepository, AuditLogsRepository, BootstrapRepository,
+    DatabaseError, EnvironmentsRepository, OrganizationMembersRepository, OrganizationsRepository,
+    ProjectsRepository, SpansRepository, TokenUsagesRepository, TracesRepository, UsersRepository,
 };
-use agentlens_domain::{Span, SpanId, SpanType, TokenUsage, TraceId, TraceStatus, UsageSource};
+use agentlens_domain::{
+    OrgRole, Span, SpanId, SpanType, TokenUsage, TraceId, TraceStatus, UsageSource,
+};
 use chrono::{Duration, Utc};
 use rust_decimal::Decimal;
 use std::env;
@@ -306,4 +309,120 @@ async fn test_cross_tenant_constraint_rejection() {
         bad_result.is_err(),
         "Cross-project environment reference must be rejected by PostgreSQL foreign key constraint"
     );
+}
+
+#[tokio::test]
+async fn test_api_key_lifecycle_and_verification() {
+    let Some(pool) = setup_test_db().await else {
+        return;
+    };
+
+    let orgs_repo = OrganizationsRepository::new(&pool);
+    let projects_repo = ProjectsRepository::new(&pool);
+    let keys_repo = ApiKeysRepository::new(&pool);
+
+    let org = orgs_repo
+        .create("Key Org", &format!("key-org-{}", Uuid::new_v4()))
+        .await
+        .unwrap();
+    let (project, envs) = projects_repo
+        .create(
+            org.id,
+            "Key Project",
+            &format!("kp-{}", Uuid::new_v4()),
+            None,
+        )
+        .await
+        .unwrap();
+    let env = &envs[0];
+
+    // 1. Generate key
+    let (secret, prefix, hash) = agentlens_auth::generate_api_key();
+    assert!(secret.starts_with("agl_live_"));
+
+    // 2. Insert into DB
+    let key = keys_repo
+        .create(
+            org.id,
+            project.id,
+            env.id,
+            "Production Ingestion Key",
+            &prefix,
+            &hash,
+            serde_json::json!(["telemetry:write"]),
+            None,
+        )
+        .await
+        .expect("Create key");
+
+    // 3. Find by prefix
+    let found_keys = keys_repo.find_by_prefix(&prefix).await.unwrap();
+    assert_eq!(found_keys.len(), 1);
+    assert_eq!(found_keys[0].id, key.id);
+
+    // 4. Verify in constant time
+    assert!(agentlens_auth::verify_api_key_hash(
+        &found_keys[0].key_hash,
+        &secret
+    ));
+    assert!(!agentlens_auth::verify_api_key_hash(
+        &found_keys[0].key_hash,
+        "agl_live_wrongsecret"
+    ));
+
+    // 5. Revoke key
+    keys_repo.revoke(key.id).await.unwrap();
+    let active_after_revoke = keys_repo.find_by_prefix(&prefix).await.unwrap();
+    assert!(
+        active_after_revoke.is_empty(),
+        "Revoked keys must be filtered out"
+    );
+}
+
+#[tokio::test]
+async fn test_organization_members_rbac_and_isolation() {
+    let Some(pool) = setup_test_db().await else {
+        return;
+    };
+
+    let orgs_repo = OrganizationsRepository::new(&pool);
+    let users_repo = UsersRepository::new(&pool);
+    let members_repo = OrganizationMembersRepository::new(&pool);
+
+    let org = orgs_repo
+        .create("RBAC Org", &format!("rbac-org-{}", Uuid::new_v4()))
+        .await
+        .unwrap();
+
+    let user = users_repo
+        .create(
+            &format!("user-{}@example.com", Uuid::new_v4()),
+            Some("fake_pw_hash"),
+            Some("RBAC Tester"),
+        )
+        .await
+        .unwrap();
+
+    // 1. Add as Viewer
+    let member = members_repo
+        .add(org.id, user.id, OrgRole::Viewer)
+        .await
+        .unwrap();
+    assert_eq!(member.role, OrgRole::Viewer);
+
+    let role = members_repo.get_role(org.id, user.id).await.unwrap();
+    assert_eq!(role, Some(OrgRole::Viewer));
+
+    // 2. Promote to Admin
+    members_repo
+        .update_role(org.id, user.id, OrgRole::Admin)
+        .await
+        .unwrap();
+    let role = members_repo.get_role(org.id, user.id).await.unwrap();
+    assert_eq!(role, Some(OrgRole::Admin));
+
+    // 3. Remove member
+    members_repo.remove(org.id, user.id).await.unwrap();
+    let role = members_repo.get_role(org.id, user.id).await.unwrap();
+    assert_eq!(role, None);
 }
