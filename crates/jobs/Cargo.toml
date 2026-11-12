@@ -13,6 +13,8 @@ agentlens-database = { workspace = true }
 agentlens-observability = { workspace = true }
 agentlens-pricing = { workspace = true }
 agentlens-traces = { workspace = true }
+agentlens-alerts = { workspace = true }
+agentlens-notifications = { workspace = true }
 thiserror = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
