@@ -1,0 +1,21 @@
+[package]
+name = "agentlens-api"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+
+[dependencies]
+agentlens-app = { workspace = true }
+agentlens-domain = { workspace = true }
+agentlens-config = { workspace = true }
+agentlens-observability = { workspace = true }
+agentlens-database = { workspace = true }
+axum = { workspace = true }
+tokio = { workspace = true }
+tower = { workspace = true }
+tower-http = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
