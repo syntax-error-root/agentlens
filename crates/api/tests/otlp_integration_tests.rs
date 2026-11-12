@@ -72,6 +72,7 @@ async fn setup_test_api() -> Option<(DbPool, axum::Router, Uuid, Uuid, Uuid, Str
     let state = AppState {
         db: Some(pool.clone()),
         config,
+        ..Default::default()
     };
     let app = create_router(state);
 
