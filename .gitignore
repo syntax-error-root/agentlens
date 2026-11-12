@@ -1,0 +1,64 @@
+# Rust
+/target/
+**/*.rs.bk
+Cargo.lock.bak
+
+# Node / Next.js / TypeScript
+node_modules/
+.pnp
+.pnp.js
+.next/
+out/
+build/
+dist/
+*.tsbuildinfo
+next-env.d.ts
+.pnpm-debug.log*
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+.venv/
+venv/
+ENV/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+*.egg-info/
+.eggs/
+
+# Environment & Secrets (CRITICAL: NEVER COMMIT)
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.crt
+*.p12
+secrets/
+
+# Local Infrastructure & Volumes
+.data/
+postgres-data/
+redis-data/
+minio-data/
+*.db
+*.sqlite
+*.sqlite3
+
+# Testing & Coverage
+coverage/
+lcov.info
+playwright-report/
+test-results/
+
+# OS & IDEs
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/*
+!.vscode/settings.json
+!.vscode/extensions.json
+*.swp
+*.swo
