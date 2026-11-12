@@ -4,7 +4,11 @@ version = "0.1.0"
 description = "AgentLens Python SDK for AI Agent Observability"
 readme = "README.md"
 requires-python = ">=3.10"
-dependencies = []
+dependencies = [
+    "opentelemetry-api>=1.25.0",
+    "opentelemetry-exporter-otlp-proto-http>=1.25.0",
+    "opentelemetry-sdk>=1.25.0",
+]
 
 [project.optional-dependencies]
 dev = [
@@ -20,6 +24,9 @@ build-backend = "hatchling.build"
 [tool.ruff]
 line-length = 100
 target-version = "py310"
+
+[tool.ruff.lint]
+ignore = ["BLE001"]
 
 [tool.mypy]
 python_version = "3.10"
