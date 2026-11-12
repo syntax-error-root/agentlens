@@ -179,7 +179,16 @@ async fn test_otlp_protobuf_and_gzip_ingestion() {
         .unwrap();
 
     let res = app.oneshot(req).await.unwrap();
-    assert_eq!(res.status(), StatusCode::OK);
+    let status = res.status();
+    let body_bytes = axum::body::to_bytes(res.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "Failed with response: {}",
+        String::from_utf8_lossy(&body_bytes)
+    );
 
     // Verify DB persistence
     let trace_id = TraceId::new("1234567890abcdef1234567890abcdef").unwrap();
@@ -300,7 +309,16 @@ async fn test_out_of_order_span_batches() {
         .unwrap();
 
     let res1 = app.clone().oneshot(http_req1).await.unwrap();
-    assert_eq!(res1.status(), StatusCode::OK);
+    let status1 = res1.status();
+    let body1 = axum::body::to_bytes(res1.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    assert_eq!(
+        status1,
+        StatusCode::OK,
+        "Failed res1: {}",
+        String::from_utf8_lossy(&body1)
+    );
 
     // Verify provisional state
     let trace_id = TraceId::new("fedcba9876543210fedcba9876543210").unwrap();
@@ -348,7 +366,16 @@ async fn test_out_of_order_span_batches() {
         .unwrap();
 
     let res2 = app.oneshot(http_req2).await.unwrap();
-    assert_eq!(res2.status(), StatusCode::OK);
+    let status2 = res2.status();
+    let body2 = axum::body::to_bytes(res2.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    assert_eq!(
+        status2,
+        StatusCode::OK,
+        "Failed res2: {}",
+        String::from_utf8_lossy(&body2)
+    );
 
     // Authoritative trace verified
     let final_trace = traces_repo
@@ -401,7 +428,16 @@ async fn test_duplicate_batch_idempotency() {
         .body(Body::from(bytes.clone()))
         .unwrap();
     let res1 = app.clone().oneshot(http_req1).await.unwrap();
-    assert_eq!(res1.status(), StatusCode::OK);
+    let status1 = res1.status();
+    let body1 = axum::body::to_bytes(res1.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    assert_eq!(
+        status1,
+        StatusCode::OK,
+        "Failed res1: {}",
+        String::from_utf8_lossy(&body1)
+    );
 
     // Ingest exact duplicate second time
     let http_req2 = Request::builder()
@@ -412,7 +448,16 @@ async fn test_duplicate_batch_idempotency() {
         .body(Body::from(bytes))
         .unwrap();
     let res2 = app.oneshot(http_req2).await.unwrap();
-    assert_eq!(res2.status(), StatusCode::OK);
+    let status2 = res2.status();
+    let body2 = axum::body::to_bytes(res2.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    assert_eq!(
+        status2,
+        StatusCode::OK,
+        "Failed res2: {}",
+        String::from_utf8_lossy(&body2)
+    );
 
     let trace_id = TraceId::new("abcdef0123456789abcdef0123456789").unwrap();
     let spans_repo = SpansRepository::new(&pool);
