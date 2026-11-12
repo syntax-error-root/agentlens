@@ -17,11 +17,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .init();
 
     let config = AppConfig::from_env();
+    config.validate()?;
     info!("Starting agentlens-api (env: {})", config.environment);
 
     let db_pool = match create_pool(&config).await {
         Ok(pool) => {
-            info!("Connected to PostgreSQL at {}", config.database_url);
+            info!("Connected to PostgreSQL at {}", config.database.url);
             Some(pool)
         }
         Err(err) => {
@@ -36,21 +37,25 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let state = AppState { db: db_pool };
     let app = create_router(state);
 
-    let api_addr: SocketAddr = config.api_bind_addr.parse().unwrap_or_else(|_| {
+    let api_addr: SocketAddr = config.server.api_bind_addr.parse().unwrap_or_else(|_| {
         warn!(
             "Invalid API_BIND_ADDR: '{}', falling back to 0.0.0.0:8080",
-            config.api_bind_addr
+            config.server.api_bind_addr
         );
         "0.0.0.0:8080".parse().unwrap()
     });
 
-    let otlp_addr: SocketAddr = config.otlp_http_bind_addr.parse().unwrap_or_else(|_| {
-        warn!(
-            "Invalid OTLP_HTTP_BIND_ADDR: '{}', falling back to 0.0.0.0:4318",
-            config.otlp_http_bind_addr
-        );
-        "0.0.0.0:4318".parse().unwrap()
-    });
+    let otlp_addr: SocketAddr = config
+        .server
+        .otlp_http_bind_addr
+        .parse()
+        .unwrap_or_else(|_| {
+            warn!(
+                "Invalid OTLP_HTTP_BIND_ADDR: '{}', falling back to 0.0.0.0:4318",
+                config.server.otlp_http_bind_addr
+            );
+            "0.0.0.0:4318".parse().unwrap()
+        });
 
     let api_listener = tokio::net::TcpListener::bind(api_addr).await?;
     info!("agentlens-api HTTP listening on http://{}", api_addr);
@@ -84,10 +89,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 }
             }
         }
-    } else {
-        if let Err(e) = api_server.await {
-            error!("API server error: {}", e);
-        }
+    } else if let Err(e) = api_server.await {
+        error!("API server error: {}", e);
     }
 
     info!("agentlens-api terminated cleanly.");
