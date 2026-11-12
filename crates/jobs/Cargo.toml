@@ -11,4 +11,22 @@ agentlens-domain = { workspace = true }
 agentlens-config = { workspace = true }
 agentlens-database = { workspace = true }
 agentlens-observability = { workspace = true }
+agentlens-traces = { workspace = true }
 thiserror = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+uuid = { workspace = true }
+chrono = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+rand = { workspace = true }
+async-trait = { workspace = true }
+
+[dev-dependencies]
+hex = { workspace = true }
+sqlx = { workspace = true }
+agentlens-organizations = { workspace = true }
+agentlens-projects = { workspace = true }
+agentlens-telemetry = { workspace = true }
+
+
