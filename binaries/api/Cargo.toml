@@ -15,6 +15,7 @@ agentlens-api = { workspace = true }
 agentlens-config = { workspace = true }
 agentlens-observability = { workspace = true }
 agentlens-database = { workspace = true }
+axum = { workspace = true }
 tokio = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
