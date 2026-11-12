@@ -1,8 +1,15 @@
 import {
   Agent,
+  AgentAnalyticsItem,
   AgentVersion,
+  AnalyticsOverview,
   ApiKey,
+  CostAnalyticsResult,
   Environment,
+  ErrorAnalyticsResult,
+  LatencyAnalyticsResult,
+  ModelAnalyticsItem,
+  ModelPricing,
   OrgRole,
   Organization,
   Project,
@@ -10,6 +17,8 @@ import {
   Session,
   Span,
   SpanDetail,
+  TokenAnalyticsResult,
+  ToolAnalyticsItem,
   Trace,
   TraceQueryResult,
   User,
@@ -309,6 +318,107 @@ export const api = {
       return request<Trace[]>(
         `/api/v1/sessions/${encodeURIComponent(sessionId)}/traces?limit=${limit}`
       );
+    },
+  },
+
+  analytics: {
+    async getOverview(params: {
+      projectId: string;
+      environmentId?: string;
+      from?: string;
+      to?: string;
+    }): Promise<AnalyticsOverview> {
+      const q = new URLSearchParams({ project_id: params.projectId });
+      if (params.environmentId) q.set("environment_id", params.environmentId);
+      if (params.from) q.set("from", params.from);
+      if (params.to) q.set("to", params.to);
+      return request<AnalyticsOverview>(`/api/v1/analytics/overview?${q.toString()}`);
+    },
+    async getTokens(params: {
+      projectId: string;
+      environmentId?: string;
+      from?: string;
+      to?: string;
+    }): Promise<TokenAnalyticsResult> {
+      const q = new URLSearchParams({ project_id: params.projectId });
+      if (params.environmentId) q.set("environment_id", params.environmentId);
+      if (params.from) q.set("from", params.from);
+      if (params.to) q.set("to", params.to);
+      return request<TokenAnalyticsResult>(`/api/v1/analytics/tokens?${q.toString()}`);
+    },
+    async getCosts(params: {
+      projectId: string;
+      environmentId?: string;
+      from?: string;
+      to?: string;
+    }): Promise<CostAnalyticsResult> {
+      const q = new URLSearchParams({ project_id: params.projectId });
+      if (params.environmentId) q.set("environment_id", params.environmentId);
+      if (params.from) q.set("from", params.from);
+      if (params.to) q.set("to", params.to);
+      return request<CostAnalyticsResult>(`/api/v1/analytics/costs?${q.toString()}`);
+    },
+    async getModels(params: {
+      projectId: string;
+      from?: string;
+      to?: string;
+    }): Promise<ModelAnalyticsItem[]> {
+      const q = new URLSearchParams({ project_id: params.projectId });
+      if (params.from) q.set("from", params.from);
+      if (params.to) q.set("to", params.to);
+      return request<ModelAnalyticsItem[]>(`/api/v1/analytics/models?${q.toString()}`);
+    },
+    async getAgents(params: {
+      projectId: string;
+      environmentId?: string;
+      from?: string;
+      to?: string;
+    }): Promise<AgentAnalyticsItem[]> {
+      const q = new URLSearchParams({ project_id: params.projectId });
+      if (params.environmentId) q.set("environment_id", params.environmentId);
+      if (params.from) q.set("from", params.from);
+      if (params.to) q.set("to", params.to);
+      return request<AgentAnalyticsItem[]>(`/api/v1/analytics/agents?${q.toString()}`);
+    },
+    async getTools(params: {
+      projectId: string;
+      from?: string;
+      to?: string;
+    }): Promise<ToolAnalyticsItem[]> {
+      const q = new URLSearchParams({ project_id: params.projectId });
+      if (params.from) q.set("from", params.from);
+      if (params.to) q.set("to", params.to);
+      return request<ToolAnalyticsItem[]>(`/api/v1/analytics/tools?${q.toString()}`);
+    },
+    async getLatency(params: {
+      projectId: string;
+      environmentId?: string;
+      from?: string;
+      to?: string;
+    }): Promise<LatencyAnalyticsResult> {
+      const q = new URLSearchParams({ project_id: params.projectId });
+      if (params.environmentId) q.set("environment_id", params.environmentId);
+      if (params.from) q.set("from", params.from);
+      if (params.to) q.set("to", params.to);
+      return request<LatencyAnalyticsResult>(`/api/v1/analytics/latency?${q.toString()}`);
+    },
+    async getErrors(params: {
+      projectId: string;
+      environmentId?: string;
+      from?: string;
+      to?: string;
+    }): Promise<ErrorAnalyticsResult> {
+      const q = new URLSearchParams({ project_id: params.projectId });
+      if (params.environmentId) q.set("environment_id", params.environmentId);
+      if (params.from) q.set("from", params.from);
+      if (params.to) q.set("to", params.to);
+      return request<ErrorAnalyticsResult>(`/api/v1/analytics/errors?${q.toString()}`);
+    },
+  },
+
+  pricing: {
+    async list(): Promise<ModelPricing[]> {
+      return request<ModelPricing[]>("/api/v1/pricing");
     },
   },
 };
