@@ -776,7 +776,7 @@ impl<'a> OutboxRepository<'a> {
         )
         .bind(worker_id)
         .bind(limit)
-        .bind(lease_seconds as f64)
+        .bind(f64::from(lease_seconds))
         .map(|r: PgRow| OutboxJob {
             id: r.get("id"),
             organization_id: r.get("organization_id"),

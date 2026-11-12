@@ -182,8 +182,10 @@ mod tests {
 
     #[test]
     fn test_production_fails_with_insecure_defaults() {
-        let mut config = AppConfig::default();
-        config.environment = "production".to_string();
+        let config = AppConfig {
+            environment: "production".to_string(),
+            ..Default::default()
+        };
         let result = config.validate();
         assert!(result.is_err());
         let err_msg = result.unwrap_err().to_string();
@@ -192,12 +194,16 @@ mod tests {
 
     #[test]
     fn test_production_valid_with_strong_keys() {
-        let mut config = AppConfig::default();
-        config.environment = "production".to_string();
-        config.security.session_secret =
-            "super_strong_production_session_secret_at_least_32_bytes_long!".to_string();
-        config.security.app_encryption_key =
-            "a9f4c3b8e1d2a5f6e7c8b9a0d1e2f3a4b5c6d7e8f9a0b1c2d3e4f5a6b7c8d9e0".to_string();
+        let config = AppConfig {
+            environment: "production".to_string(),
+            security: SecurityConfig {
+                session_secret: "super_strong_production_session_secret_at_least_32_bytes_long!"
+                    .to_string(),
+                app_encryption_key:
+                    "a9f4c3b8e1d2a5f6e7c8b9a0d1e2f3a4b5c6d7e8f9a0b1c2d3e4f5a6b7c8d9e0".to_string(),
+            },
+            ..Default::default()
+        };
         assert!(config.validate().is_ok());
     }
 }
