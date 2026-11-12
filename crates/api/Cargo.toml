@@ -20,6 +20,10 @@ agentlens-traces = { workspace = true }
 agentlens-analytics = { workspace = true }
 agentlens-pricing = { workspace = true }
 agentlens-privacy = { workspace = true }
+agentlens-alerts = { workspace = true }
+agentlens-notifications = { workspace = true }
+agentlens-agents = { workspace = true }
+sqlx = { workspace = true }
 rust_decimal = { workspace = true }
 prost = { workspace = true }
 opentelemetry-proto = { workspace = true }
