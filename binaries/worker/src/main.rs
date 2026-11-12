@@ -2,10 +2,12 @@
 
 use agentlens_config::AppConfig;
 use agentlens_database::create_pool;
-use std::time::Duration;
+use agentlens_jobs::{OutboxWorker, WorkerConfig};
+use agentlens_observability::ObservabilityRegistry;
+use std::sync::Arc;
 use tokio::signal;
-use tokio::time::sleep;
-use tracing::{info, warn};
+use tokio::sync::watch;
+use tracing::{error, info, warn};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -20,7 +22,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     config.validate()?;
     info!("Starting agentlens-worker (env: {})", config.environment);
 
-    let _db_pool = match create_pool(&config).await {
+    let db_pool = match create_pool(&config).await {
         Ok(pool) => {
             info!("Worker connected to PostgreSQL at {}", config.database.url);
             Some(pool)
@@ -31,19 +33,24 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     };
 
-    let mut shutdown = Box::pin(shutdown_signal());
+    let registry = Arc::new(ObservabilityRegistry::new());
+    let worker_config = WorkerConfig::default();
 
-    info!("agentlens-worker polling loop initialized.");
-    loop {
-        tokio::select! {
-            _ = &mut shutdown => {
-                info!("Worker received shutdown signal.");
-                break;
-            }
-            _ = sleep(Duration::from_millis(500)) => {
-                // Outbox job leasing will be executed here in Phase 05
-            }
-        }
+    let (shutdown_tx, shutdown_rx) = watch::channel(false);
+
+    if let Some(pool) = db_pool {
+        let worker = OutboxWorker::new(pool, registry, worker_config);
+        let worker_task = tokio::spawn(async move {
+            worker.run(shutdown_rx).await;
+        });
+
+        shutdown_signal().await;
+        info!("Shutdown signal received. Notifying worker task...");
+        let _ = shutdown_tx.send(true);
+        let _ = worker_task.await;
+    } else {
+        error!("Worker cannot start without valid database pool.");
+        shutdown_signal().await;
     }
 
     info!("agentlens-worker shut down cleanly.");
@@ -72,6 +79,4 @@ async fn shutdown_signal() {
         _ = ctrl_c => {},
         _ = terminate => {},
     }
-
-    info!("Shutdown signal received in worker, terminating gracefully...");
 }
