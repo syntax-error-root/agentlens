@@ -1642,7 +1642,13 @@ impl<'a> TracesRepository<'a> {
                 INSERT INTO outbox_jobs (
                     organization_id, project_id, job_type, dedup_key, payload, status, available_at
                 ) VALUES ($1, $2, 'trace_ingested', $3, $4, 'pending', now())
-                ON CONFLICT (dedup_key) DO NOTHING
+                ON CONFLICT (dedup_key) DO UPDATE SET
+                    status = 'pending',
+                    attempts = 0,
+                    available_at = now(),
+                    completed_at = NULL,
+                    last_error = NULL
+                WHERE outbox_jobs.status IN ('completed', 'dead')
                 "#,
             )
             .bind(org_id)
