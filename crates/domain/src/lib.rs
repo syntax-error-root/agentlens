@@ -295,6 +295,20 @@ impl UsageSource {
     }
 }
 
+impl std::str::FromStr for UsageSource {
+    type Err = DomainError;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "provider_reported" => Ok(Self::ProviderReported),
+            "estimated" => Ok(Self::Estimated),
+            other => Err(DomainError::InvalidEnumValue(format!(
+                "invalid usage source: '{other}', expected 'provider_reported' or 'estimated'"
+            ))),
+        }
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Entities
 // ---------------------------------------------------------------------------
@@ -569,6 +583,70 @@ pub struct OutboxJob {
     pub completed_at: Option<DateTime<Utc>>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SpanDetail {
+    #[serde(flatten)]
+    pub span: Span,
+    pub events: Vec<SpanEvent>,
+    pub links: Vec<SpanLink>,
+    pub token_usage: Option<TokenUsage>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct TraceQueryFilters {
+    pub project_id: Uuid,
+    pub environment_id: Option<Uuid>,
+    pub agent_id: Option<Uuid>,
+    pub status: Option<String>,
+    pub provider: Option<String>,
+    pub model: Option<String>,
+    pub span_type: Option<String>,
+    pub min_duration_ms: Option<i64>,
+    pub max_duration_ms: Option<i64>,
+    pub from: Option<DateTime<Utc>>,
+    pub to: Option<DateTime<Utc>>,
+    pub search_trace_id: Option<String>,
+    pub cursor: Option<String>,
+    pub limit: Option<i64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TraceQueryResult {
+    pub items: Vec<Trace>,
+    pub next_cursor: Option<String>,
+    pub has_more: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ProjectOverviewMetrics {
+    pub active_agents_count: i64,
+    pub total_traces_count: i64,
+    pub error_rate: f64,
+    pub total_input_tokens: i64,
+    pub total_output_tokens: i64,
+    pub total_tokens: i64,
+    pub p50_duration_ms: Option<f64>,
+    pub p95_duration_ms: Option<f64>,
+    pub recent_traces: Vec<Trace>,
+    pub recent_errors: Vec<Trace>,
+}
+
+pub fn encode_cursor(started_at: DateTime<Utc>, id: Uuid) -> String {
+    let raw = format!("{}_{}", started_at.to_rfc3339(), id);
+    hex::encode(raw)
+}
+
+pub fn decode_cursor(cursor: &str) -> Option<(DateTime<Utc>, Uuid)> {
+    let bytes = hex::decode(cursor).ok()?;
+    let s = String::from_utf8(bytes).ok()?;
+    let (ts_str, id_str) = s.split_once('_')?;
+    let ts = DateTime::parse_from_rfc3339(ts_str)
+        .ok()?
+        .with_timezone(&Utc);
+    let id = Uuid::parse_str(id_str).ok()?;
+    Some((ts, id))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -610,5 +688,15 @@ mod tests {
         assert_eq!(SpanType::from_str("agent").unwrap(), SpanType::Agent);
         assert_eq!(SpanType::from_str("tool").unwrap(), SpanType::Tool);
         assert!(SpanType::from_str("invalid").is_err());
+    }
+
+    #[test]
+    fn test_cursor_encoding_and_decoding() {
+        let now = Utc::now();
+        let id = Uuid::new_v4();
+        let encoded = encode_cursor(now, id);
+        let decoded = decode_cursor(&encoded).expect("cursor must decode");
+        assert_eq!(decoded.1, id);
+        assert_eq!(decoded.0.timestamp_millis(), now.timestamp_millis());
     }
 }

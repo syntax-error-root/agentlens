@@ -3,11 +3,15 @@
 //! `agentlens-api` crate.
 //! HTTP routing, middleware, health endpoints, and control-plane API handlers.
 
+pub mod agents;
 pub mod auth;
 pub mod middleware;
 pub mod organizations;
 pub mod otlp;
+pub mod overview;
 pub mod projects;
+pub mod sessions;
+pub mod traces;
 
 use agentlens_config::AppConfig;
 use agentlens_database::{check_readiness, DbPool};
@@ -82,6 +86,52 @@ pub fn create_router(state: AppState) -> Router {
             "/api/v1/api-keys/{key_id}",
             delete(projects::revoke_api_key_handler),
         )
+        // Project Overview
+        .route(
+            "/api/v1/projects/{project_id}/overview",
+            get(overview::get_project_overview_handler),
+        )
+        // Agents
+        .route(
+            "/api/v1/projects/{project_id}/agents",
+            get(agents::list_agents_handler).post(agents::create_agent_handler),
+        )
+        .route(
+            "/api/v1/agents/{agent_id}",
+            get(agents::get_agent_handler).patch(agents::update_agent_handler),
+        )
+        .route(
+            "/api/v1/agents/{agent_id}/versions",
+            get(agents::list_agent_versions_handler),
+        )
+        .route(
+            "/api/v1/agents/{agent_id}/traces",
+            get(agents::list_agent_traces_handler),
+        )
+        // Traces and Spans
+        .route("/api/v1/traces", get(traces::list_traces_handler))
+        .route(
+            "/api/v1/traces/{trace_record_id}",
+            get(traces::get_trace_handler),
+        )
+        .route(
+            "/api/v1/traces/{trace_record_id}/spans",
+            get(traces::list_trace_spans_handler),
+        )
+        .route(
+            "/api/v1/spans/{span_record_id}",
+            get(traces::get_span_handler),
+        )
+        // Sessions
+        .route("/api/v1/sessions", get(sessions::list_sessions_handler))
+        .route(
+            "/api/v1/sessions/{session_id}",
+            get(sessions::get_session_handler),
+        )
+        .route(
+            "/api/v1/sessions/{session_id}/traces",
+            get(sessions::list_session_traces_handler),
+        )
         .layer(from_fn_with_state(
             state_arc.clone(),
             control_plane_auth_guard,
@@ -93,6 +143,10 @@ pub fn create_router(state: AppState) -> Router {
         .route("/metrics", get(metrics_handler))
         .route("/v1/traces", post(otlp::otlp_traces_handler))
         .route("/api/v1/auth/bootstrap", post(auth::bootstrap_handler))
+        .route(
+            "/api/v1/auth/bootstrap/status",
+            get(auth::bootstrap_status_handler),
+        )
         .route("/api/v1/auth/login", post(auth::login_handler))
         .route("/api/v1/auth/oidc/start", get(auth::oidc_start_handler))
         .route(
@@ -280,5 +334,53 @@ mod tests {
         assert!(body_str.contains("agentlens_outbox_pending_jobs"));
         assert!(body_str.contains("agentlens_worker_jobs_processed_total"));
         assert!(body_str.contains("agentlens_otlp_spans_ingested_total"));
+    }
+
+    #[tokio::test]
+    async fn test_bootstrap_status_endpoint_is_public() {
+        let app = create_router(AppState::default());
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri("/api/v1/auth/bootstrap/status")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        // Without DB it returns 503 SERVICE_UNAVAILABLE, NOT 401 UNAUTHORIZED
+        assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+    }
+
+    #[tokio::test]
+    async fn test_query_endpoints_require_authentication() {
+        let app = create_router(AppState::default());
+        let protected_uris = [
+            "/api/v1/projects/00000000-0000-0000-0000-000000000001/overview",
+            "/api/v1/projects/00000000-0000-0000-0000-000000000001/agents",
+            "/api/v1/traces?project_id=00000000-0000-0000-0000-000000000001",
+            "/api/v1/sessions?project_id=00000000-0000-0000-0000-000000000001",
+        ];
+
+        for uri in protected_uris {
+            let response = app
+                .clone()
+                .oneshot(
+                    Request::builder()
+                        .method("GET")
+                        .uri(uri)
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(
+                response.status(),
+                StatusCode::UNAUTHORIZED,
+                "Expected 401 Unauthorized for {uri}"
+            );
+        }
     }
 }
