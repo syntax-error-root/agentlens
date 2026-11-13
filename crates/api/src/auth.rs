@@ -403,3 +403,31 @@ pub async fn oidc_callback_handler(
     )
         .into_response()
 }
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct BootstrapStatusResponse {
+    pub can_bootstrap: bool,
+}
+
+pub async fn bootstrap_status_handler(State(state): State<Arc<AppState>>) -> Response {
+    let pool = match &state.db {
+        Some(p) => p,
+        None => {
+            return (
+                StatusCode::SERVICE_UNAVAILABLE,
+                Json(json!({ "error": "Database unavailable" })),
+            )
+                .into_response();
+        }
+    };
+
+    let repo = BootstrapRepository::new(pool);
+    match repo.can_bootstrap().await {
+        Ok(can_bootstrap) => Json(BootstrapStatusResponse { can_bootstrap }).into_response(),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({ "error": format!("Failed to check bootstrap status: {e}") })),
+        )
+            .into_response(),
+    }
+}

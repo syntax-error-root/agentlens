@@ -5,8 +5,10 @@
 
 use agentlens_config::AppConfig;
 use agentlens_domain::{
-    Agent, ApiKey, AuditLog, Environment, OrgRole, Organization, OrganizationMember, OutboxJob,
-    Project, Span, SpanId, SpanType, TokenUsage, Trace, TraceId, TraceStatus, User,
+    decode_cursor, encode_cursor, Agent, AgentVersion, ApiKey, AuditLog, Environment, OrgRole,
+    Organization, OrganizationMember, OutboxJob, Project, ProjectOverviewMetrics, Session, Span,
+    SpanDetail, SpanEvent, SpanId, SpanLink, SpanType, TokenUsage, Trace, TraceId,
+    TraceQueryFilters, TraceQueryResult, TraceStatus, UsageSource, User,
 };
 use agentlens_telemetry::NormalizedSpan;
 use chrono::{DateTime, Utc};
@@ -1173,6 +1175,13 @@ impl<'a> BootstrapRepository<'a> {
         tx.commit().await?;
         Ok((user, org, project, envs))
     }
+
+    pub async fn can_bootstrap(&self) -> Result<bool, DatabaseError> {
+        let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM users")
+            .fetch_one(self.pool)
+            .await?;
+        Ok(count == 0)
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1233,6 +1242,81 @@ impl<'a> AgentsRepository<'a> {
         Ok(row)
     }
 
+    pub async fn list_by_project(&self, project_id: Uuid) -> Result<Vec<Agent>, DatabaseError> {
+        let rows = sqlx::query(
+            r#"
+            SELECT id, organization_id, project_id, name, framework, language,
+                   description, metadata, last_seen_at, created_at, updated_at
+            FROM agents
+            WHERE project_id = $1
+            ORDER BY COALESCE(last_seen_at, created_at) DESC
+            "#,
+        )
+        .bind(project_id)
+        .map(|r: PgRow| Agent {
+            id: r.get("id"),
+            organization_id: r.get("organization_id"),
+            project_id: r.get("project_id"),
+            name: r.get("name"),
+            framework: r.get("framework"),
+            language: r.get("language"),
+            description: r.get("description"),
+            metadata: r.get("metadata"),
+            last_seen_at: r.get("last_seen_at"),
+            created_at: r.get("created_at"),
+            updated_at: r.get("updated_at"),
+        })
+        .fetch_all(self.pool)
+        .await?;
+
+        Ok(rows)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub async fn create(
+        &self,
+        org_id: Uuid,
+        project_id: Uuid,
+        name: &str,
+        framework: Option<&str>,
+        language: Option<&str>,
+        description: Option<&str>,
+        metadata: serde_json::Value,
+    ) -> Result<Agent, DatabaseError> {
+        let row = sqlx::query(
+            r#"
+            INSERT INTO agents (organization_id, project_id, name, framework, language, description, metadata, last_seen_at)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, now())
+            RETURNING id, organization_id, project_id, name, framework, language,
+                      description, metadata, last_seen_at, created_at, updated_at
+            "#,
+        )
+        .bind(org_id)
+        .bind(project_id)
+        .bind(name)
+        .bind(framework)
+        .bind(language)
+        .bind(description)
+        .bind(metadata)
+        .map(|r: PgRow| Agent {
+            id: r.get("id"),
+            organization_id: r.get("organization_id"),
+            project_id: r.get("project_id"),
+            name: r.get("name"),
+            framework: r.get("framework"),
+            language: r.get("language"),
+            description: r.get("description"),
+            metadata: r.get("metadata"),
+            last_seen_at: r.get("last_seen_at"),
+            created_at: r.get("created_at"),
+            updated_at: r.get("updated_at"),
+        })
+        .fetch_one(self.pool)
+        .await?;
+
+        Ok(row)
+    }
+
     pub async fn get_by_id(
         &self,
         project_id: Uuid,
@@ -1266,6 +1350,345 @@ impl<'a> AgentsRepository<'a> {
 
         Ok(row)
     }
+
+    pub async fn get_by_id_global(&self, agent_id: Uuid) -> Result<Option<Agent>, DatabaseError> {
+        let row = sqlx::query(
+            r#"
+            SELECT id, organization_id, project_id, name, framework, language,
+                   description, metadata, last_seen_at, created_at, updated_at
+            FROM agents
+            WHERE id = $1
+            "#,
+        )
+        .bind(agent_id)
+        .map(|r: PgRow| Agent {
+            id: r.get("id"),
+            organization_id: r.get("organization_id"),
+            project_id: r.get("project_id"),
+            name: r.get("name"),
+            framework: r.get("framework"),
+            language: r.get("language"),
+            description: r.get("description"),
+            metadata: r.get("metadata"),
+            last_seen_at: r.get("last_seen_at"),
+            created_at: r.get("created_at"),
+            updated_at: r.get("updated_at"),
+        })
+        .fetch_optional(self.pool)
+        .await?;
+
+        Ok(row)
+    }
+
+    pub async fn update(
+        &self,
+        project_id: Uuid,
+        agent_id: Uuid,
+        framework: Option<&str>,
+        language: Option<&str>,
+        description: Option<&str>,
+        metadata: Option<serde_json::Value>,
+    ) -> Result<Agent, DatabaseError> {
+        let existing = self
+            .get_by_id(project_id, agent_id)
+            .await?
+            .ok_or_else(|| DatabaseError::NotFound("Agent not found".into()))?;
+
+        let framework_val = framework.or(existing.framework.as_deref());
+        let language_val = language.or(existing.language.as_deref());
+        let description_val = description.or(existing.description.as_deref());
+        let metadata_val = metadata.unwrap_or(existing.metadata);
+
+        let row = sqlx::query(
+            r#"
+            UPDATE agents SET
+                framework = $1,
+                language = $2,
+                description = $3,
+                metadata = $4,
+                updated_at = now()
+            WHERE project_id = $5 AND id = $6
+            RETURNING id, organization_id, project_id, name, framework, language,
+                      description, metadata, last_seen_at, created_at, updated_at
+            "#,
+        )
+        .bind(framework_val)
+        .bind(language_val)
+        .bind(description_val)
+        .bind(metadata_val)
+        .bind(project_id)
+        .bind(agent_id)
+        .map(|r: PgRow| Agent {
+            id: r.get("id"),
+            organization_id: r.get("organization_id"),
+            project_id: r.get("project_id"),
+            name: r.get("name"),
+            framework: r.get("framework"),
+            language: r.get("language"),
+            description: r.get("description"),
+            metadata: r.get("metadata"),
+            last_seen_at: r.get("last_seen_at"),
+            created_at: r.get("created_at"),
+            updated_at: r.get("updated_at"),
+        })
+        .fetch_one(self.pool)
+        .await?;
+
+        Ok(row)
+    }
+
+    pub async fn list_versions(
+        &self,
+        project_id: Uuid,
+        agent_id: Uuid,
+    ) -> Result<Vec<AgentVersion>, DatabaseError> {
+        let rows = sqlx::query(
+            r#"
+            SELECT id, project_id, agent_id, version, configuration, created_at
+            FROM agent_versions
+            WHERE project_id = $1 AND agent_id = $2
+            ORDER BY created_at DESC
+            "#,
+        )
+        .bind(project_id)
+        .bind(agent_id)
+        .map(|r: PgRow| AgentVersion {
+            id: r.get("id"),
+            project_id: r.get("project_id"),
+            agent_id: r.get("agent_id"),
+            version: r.get("version"),
+            configuration: r.get("configuration"),
+            created_at: r.get("created_at"),
+        })
+        .fetch_all(self.pool)
+        .await?;
+
+        Ok(rows)
+    }
+
+    pub async fn list_traces(
+        &self,
+        project_id: Uuid,
+        agent_id: Uuid,
+        limit: i64,
+    ) -> Result<Vec<Trace>, DatabaseError> {
+        let rows = sqlx::query(
+            r#"
+            SELECT id, organization_id, project_id, environment_id, agent_id, session_id,
+                   trace_id, root_span_id, name, status, started_at, ended_at, duration_ms,
+                   span_count, error_span_count, total_input_tokens, total_output_tokens,
+                   total_cached_input_tokens, total_reasoning_tokens, estimated_cost,
+                   has_unpriced_usage, currency, resource_attributes, attributes,
+                   received_at, finalized_at, created_at, updated_at
+            FROM traces
+            WHERE project_id = $1 AND agent_id = $2
+            ORDER BY started_at DESC
+            LIMIT $3
+            "#,
+        )
+        .bind(project_id)
+        .bind(agent_id)
+        .bind(limit.clamp(1, 100))
+        .fetch_all(self.pool)
+        .await?;
+
+        let mut traces = Vec::with_capacity(rows.len());
+        for r in &rows {
+            traces.push(parse_trace_row(r)?);
+        }
+        Ok(traces)
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Sessions Repository
+// ---------------------------------------------------------------------------
+
+pub struct SessionsRepository<'a> {
+    pool: &'a DbPool,
+}
+
+impl<'a> SessionsRepository<'a> {
+    pub fn new(pool: &'a DbPool) -> Self {
+        Self { pool }
+    }
+
+    pub async fn list_by_project(
+        &self,
+        project_id: Uuid,
+        limit: i64,
+    ) -> Result<Vec<Session>, DatabaseError> {
+        let rows = sqlx::query(
+            r#"
+            SELECT id, organization_id, project_id, external_session_id, user_ref, metadata,
+                   started_at, last_seen_at, created_at
+            FROM sessions
+            WHERE project_id = $1
+            ORDER BY COALESCE(last_seen_at, created_at) DESC
+            LIMIT $2
+            "#,
+        )
+        .bind(project_id)
+        .bind(limit.clamp(1, 100))
+        .map(|r: PgRow| Session {
+            id: r.get("id"),
+            organization_id: r.get("organization_id"),
+            project_id: r.get("project_id"),
+            external_session_id: r.get("external_session_id"),
+            user_ref: r.get("user_ref"),
+            metadata: r.get("metadata"),
+            started_at: r.get("started_at"),
+            last_seen_at: r.get("last_seen_at"),
+            created_at: r.get("created_at"),
+        })
+        .fetch_all(self.pool)
+        .await?;
+
+        Ok(rows)
+    }
+
+    pub async fn get_by_id(
+        &self,
+        project_id: Uuid,
+        session_id: Uuid,
+    ) -> Result<Option<Session>, DatabaseError> {
+        let row = sqlx::query(
+            r#"
+            SELECT id, organization_id, project_id, external_session_id, user_ref, metadata,
+                   started_at, last_seen_at, created_at
+            FROM sessions
+            WHERE project_id = $1 AND id = $2
+            "#,
+        )
+        .bind(project_id)
+        .bind(session_id)
+        .map(|r: PgRow| Session {
+            id: r.get("id"),
+            organization_id: r.get("organization_id"),
+            project_id: r.get("project_id"),
+            external_session_id: r.get("external_session_id"),
+            user_ref: r.get("user_ref"),
+            metadata: r.get("metadata"),
+            started_at: r.get("started_at"),
+            last_seen_at: r.get("last_seen_at"),
+            created_at: r.get("created_at"),
+        })
+        .fetch_optional(self.pool)
+        .await?;
+
+        Ok(row)
+    }
+
+    pub async fn get_by_id_global(
+        &self,
+        session_id: Uuid,
+    ) -> Result<Option<Session>, DatabaseError> {
+        let row = sqlx::query(
+            r#"
+            SELECT id, organization_id, project_id, external_session_id, user_ref, metadata,
+                   started_at, last_seen_at, created_at
+            FROM sessions
+            WHERE id = $1
+            "#,
+        )
+        .bind(session_id)
+        .map(|r: PgRow| Session {
+            id: r.get("id"),
+            organization_id: r.get("organization_id"),
+            project_id: r.get("project_id"),
+            external_session_id: r.get("external_session_id"),
+            user_ref: r.get("user_ref"),
+            metadata: r.get("metadata"),
+            started_at: r.get("started_at"),
+            last_seen_at: r.get("last_seen_at"),
+            created_at: r.get("created_at"),
+        })
+        .fetch_optional(self.pool)
+        .await?;
+
+        Ok(row)
+    }
+
+    pub async fn list_traces(
+        &self,
+        project_id: Uuid,
+        session_id: Uuid,
+        limit: i64,
+    ) -> Result<Vec<Trace>, DatabaseError> {
+        let rows = sqlx::query(
+            r#"
+            SELECT id, organization_id, project_id, environment_id, agent_id, session_id,
+                   trace_id, root_span_id, name, status, started_at, ended_at, duration_ms,
+                   span_count, error_span_count, total_input_tokens, total_output_tokens,
+                   total_cached_input_tokens, total_reasoning_tokens, estimated_cost,
+                   has_unpriced_usage, currency, resource_attributes, attributes,
+                   received_at, finalized_at, created_at, updated_at
+            FROM traces
+            WHERE project_id = $1 AND session_id = $2
+            ORDER BY started_at DESC
+            LIMIT $3
+            "#,
+        )
+        .bind(project_id)
+        .bind(session_id)
+        .bind(limit.clamp(1, 100))
+        .fetch_all(self.pool)
+        .await?;
+
+        let mut traces = Vec::with_capacity(rows.len());
+        for r in &rows {
+            traces.push(parse_trace_row(r)?);
+        }
+        Ok(traces)
+    }
+}
+
+pub fn parse_trace_row(r: &PgRow) -> Result<Trace, DatabaseError> {
+    let tid_raw: String = r.get("trace_id");
+    let parsed_trace_id =
+        TraceId::new(tid_raw).map_err(|e| DatabaseError::NotFound(e.to_string()))?;
+
+    let root_sid_raw: Option<String> = r.get("root_span_id");
+    let parsed_root_span_id = match root_sid_raw {
+        Some(sid) => Some(SpanId::new(sid).map_err(|e| DatabaseError::NotFound(e.to_string()))?),
+        None => None,
+    };
+
+    let status_raw: String = r.get("status");
+    let status = status_raw
+        .parse::<TraceStatus>()
+        .unwrap_or(TraceStatus::Unset);
+
+    Ok(Trace {
+        id: r.get("id"),
+        organization_id: r.get("organization_id"),
+        project_id: r.get("project_id"),
+        environment_id: r.get("environment_id"),
+        agent_id: r.get("agent_id"),
+        session_id: r.get("session_id"),
+        trace_id: parsed_trace_id,
+        root_span_id: parsed_root_span_id,
+        name: r.get("name"),
+        status,
+        started_at: r.get("started_at"),
+        ended_at: r.get("ended_at"),
+        duration_ms: r.get("duration_ms"),
+        span_count: r.get("span_count"),
+        error_span_count: r.get("error_span_count"),
+        total_input_tokens: r.get("total_input_tokens"),
+        total_output_tokens: r.get("total_output_tokens"),
+        total_cached_input_tokens: r.get("total_cached_input_tokens"),
+        total_reasoning_tokens: r.get("total_reasoning_tokens"),
+        estimated_cost: r.get("estimated_cost"),
+        has_unpriced_usage: r.get("has_unpriced_usage"),
+        currency: r.get("currency"),
+        resource_attributes: r.get("resource_attributes"),
+        attributes: r.get("attributes"),
+        received_at: r.get("received_at"),
+        finalized_at: r.get("finalized_at"),
+        created_at: r.get("created_at"),
+        updated_at: r.get("updated_at"),
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -1687,57 +2110,321 @@ impl<'a> TracesRepository<'a> {
         .await?;
 
         match row {
-            Some(r) => {
-                let tid_raw: String = r.get("trace_id");
-                let parsed_trace_id =
-                    TraceId::new(tid_raw).map_err(|e| DatabaseError::NotFound(e.to_string()))?;
-
-                let root_sid_raw: Option<String> = r.get("root_span_id");
-                let parsed_root_span_id = match root_sid_raw {
-                    Some(sid) => {
-                        Some(SpanId::new(sid).map_err(|e| DatabaseError::NotFound(e.to_string()))?)
-                    }
-                    None => None,
-                };
-
-                let status_raw: String = r.get("status");
-                let status = status_raw
-                    .parse::<TraceStatus>()
-                    .unwrap_or(TraceStatus::Unset);
-
-                Ok(Some(Trace {
-                    id: r.get("id"),
-                    organization_id: r.get("organization_id"),
-                    project_id: r.get("project_id"),
-                    environment_id: r.get("environment_id"),
-                    agent_id: r.get("agent_id"),
-                    session_id: r.get("session_id"),
-                    trace_id: parsed_trace_id,
-                    root_span_id: parsed_root_span_id,
-                    name: r.get("name"),
-                    status,
-                    started_at: r.get("started_at"),
-                    ended_at: r.get("ended_at"),
-                    duration_ms: r.get("duration_ms"),
-                    span_count: r.get("span_count"),
-                    error_span_count: r.get("error_span_count"),
-                    total_input_tokens: r.get("total_input_tokens"),
-                    total_output_tokens: r.get("total_output_tokens"),
-                    total_cached_input_tokens: r.get("total_cached_input_tokens"),
-                    total_reasoning_tokens: r.get("total_reasoning_tokens"),
-                    estimated_cost: r.get("estimated_cost"),
-                    has_unpriced_usage: r.get("has_unpriced_usage"),
-                    currency: r.get("currency"),
-                    resource_attributes: r.get("resource_attributes"),
-                    attributes: r.get("attributes"),
-                    received_at: r.get("received_at"),
-                    finalized_at: r.get("finalized_at"),
-                    created_at: r.get("created_at"),
-                    updated_at: r.get("updated_at"),
-                }))
-            }
+            Some(ref r) => Ok(Some(parse_trace_row(r)?)),
             None => Ok(None),
         }
+    }
+
+    pub async fn get_by_id(
+        &self,
+        project_id: Uuid,
+        id: Uuid,
+    ) -> Result<Option<Trace>, DatabaseError> {
+        let row = sqlx::query(
+            r#"
+            SELECT id, organization_id, project_id, environment_id, agent_id, session_id,
+                   trace_id, root_span_id, name, status, started_at, ended_at, duration_ms,
+                   span_count, error_span_count, total_input_tokens, total_output_tokens,
+                   total_cached_input_tokens, total_reasoning_tokens, estimated_cost,
+                   has_unpriced_usage, currency, resource_attributes, attributes,
+                   received_at, finalized_at, created_at, updated_at
+            FROM traces
+            WHERE project_id = $1 AND id = $2
+            "#,
+        )
+        .bind(project_id)
+        .bind(id)
+        .fetch_optional(self.pool)
+        .await?;
+
+        match row {
+            Some(ref r) => Ok(Some(parse_trace_row(r)?)),
+            None => Ok(None),
+        }
+    }
+
+    pub async fn get_by_id_or_trace_id(
+        &self,
+        project_id: Uuid,
+        id_or_trace_id: &str,
+    ) -> Result<Option<Trace>, DatabaseError> {
+        if let Ok(record_id) = Uuid::parse_str(id_or_trace_id) {
+            if let Some(trace) = self.get_by_id(project_id, record_id).await? {
+                return Ok(Some(trace));
+            }
+        }
+        if let Ok(tid) = TraceId::new(id_or_trace_id.to_string()) {
+            return self.get_by_trace_id(project_id, &tid).await;
+        }
+        Ok(None)
+    }
+
+    pub async fn get_by_id_or_trace_id_global(
+        &self,
+        id_or_trace_id: &str,
+    ) -> Result<Option<Trace>, DatabaseError> {
+        if let Ok(record_id) = Uuid::parse_str(id_or_trace_id) {
+            let row = sqlx::query(
+                r#"
+                SELECT id, organization_id, project_id, environment_id, agent_id, session_id,
+                       trace_id, root_span_id, name, status, started_at, ended_at, duration_ms,
+                       span_count, error_span_count, total_input_tokens, total_output_tokens,
+                       total_cached_input_tokens, total_reasoning_tokens, estimated_cost,
+                       has_unpriced_usage, currency, resource_attributes, attributes,
+                       received_at, finalized_at, created_at, updated_at
+                FROM traces
+                WHERE id = $1
+                "#,
+            )
+            .bind(record_id)
+            .fetch_optional(self.pool)
+            .await?;
+
+            if let Some(ref r) = row {
+                return Ok(Some(parse_trace_row(r)?));
+            }
+        }
+
+        let row = sqlx::query(
+            r#"
+            SELECT id, organization_id, project_id, environment_id, agent_id, session_id,
+                   trace_id, root_span_id, name, status, started_at, ended_at, duration_ms,
+                   span_count, error_span_count, total_input_tokens, total_output_tokens,
+                   total_cached_input_tokens, total_reasoning_tokens, estimated_cost,
+                   has_unpriced_usage, currency, resource_attributes, attributes,
+                   received_at, finalized_at, created_at, updated_at
+            FROM traces
+            WHERE trace_id = $1
+            LIMIT 1
+            "#,
+        )
+        .bind(id_or_trace_id)
+        .fetch_optional(self.pool)
+        .await?;
+
+        match row {
+            Some(ref r) => Ok(Some(parse_trace_row(r)?)),
+            None => Ok(None),
+        }
+    }
+
+    pub async fn list_traces(
+        &self,
+        filters: &TraceQueryFilters,
+    ) -> Result<TraceQueryResult, DatabaseError> {
+        let limit = filters.limit.unwrap_or(20).clamp(1, 100);
+        let cursor_pair = filters.cursor.as_deref().and_then(decode_cursor);
+
+        let mut qb = sqlx::QueryBuilder::new(
+            r#"
+            SELECT id, organization_id, project_id, environment_id, agent_id, session_id,
+                   trace_id, root_span_id, name, status, started_at, ended_at, duration_ms,
+                   span_count, error_span_count, total_input_tokens, total_output_tokens,
+                   total_cached_input_tokens, total_reasoning_tokens, estimated_cost,
+                   has_unpriced_usage, currency, resource_attributes, attributes,
+                   received_at, finalized_at, created_at, updated_at
+            FROM traces
+            WHERE project_id = 
+            "#,
+        );
+        qb.push_bind(filters.project_id);
+
+        if let Some(env_id) = filters.environment_id {
+            qb.push(" AND environment_id = ");
+            qb.push_bind(env_id);
+        }
+        if let Some(agent_id) = filters.agent_id {
+            qb.push(" AND agent_id = ");
+            qb.push_bind(agent_id);
+        }
+        if let Some(ref status) = filters.status {
+            qb.push(" AND status = ");
+            qb.push_bind(status.to_lowercase());
+        }
+        if let Some(min_dur) = filters.min_duration_ms {
+            qb.push(" AND duration_ms >= ");
+            qb.push_bind(min_dur);
+        }
+        if let Some(max_dur) = filters.max_duration_ms {
+            qb.push(" AND duration_ms <= ");
+            qb.push_bind(max_dur);
+        }
+        if let Some(from_dt) = filters.from {
+            qb.push(" AND started_at >= ");
+            qb.push_bind(from_dt);
+        }
+        if let Some(to_dt) = filters.to {
+            qb.push(" AND started_at <= ");
+            qb.push_bind(to_dt);
+        }
+        if let Some(ref search_tid) = filters.search_trace_id {
+            let clean = search_tid.trim().to_lowercase();
+            if !clean.is_empty() {
+                qb.push(" AND trace_id LIKE ");
+                qb.push_bind(format!("{clean}%"));
+            }
+        }
+        if let Some((cursor_ts, cursor_id)) = cursor_pair {
+            qb.push(" AND (started_at < ");
+            qb.push_bind(cursor_ts);
+            qb.push(" OR (started_at = ");
+            qb.push_bind(cursor_ts);
+            qb.push(" AND id < ");
+            qb.push_bind(cursor_id);
+            qb.push("))");
+        }
+
+        qb.push(" ORDER BY started_at DESC, id DESC LIMIT ");
+        qb.push_bind(limit + 1);
+
+        let rows = qb.build().fetch_all(self.pool).await?;
+
+        let has_more = rows.len() > limit as usize;
+        let items_slice = if has_more {
+            &rows[..limit as usize]
+        } else {
+            &rows[..]
+        };
+
+        let mut items = Vec::with_capacity(items_slice.len());
+        for r in items_slice {
+            items.push(parse_trace_row(r)?);
+        }
+
+        let next_cursor = if has_more {
+            items
+                .last()
+                .map(|last| encode_cursor(last.started_at, last.id))
+        } else {
+            None
+        };
+
+        Ok(TraceQueryResult {
+            items,
+            next_cursor,
+            has_more,
+        })
+    }
+
+    pub async fn get_project_overview(
+        &self,
+        project_id: Uuid,
+        environment_id: Option<Uuid>,
+        from: Option<DateTime<Utc>>,
+        to: Option<DateTime<Utc>>,
+    ) -> Result<ProjectOverviewMetrics, DatabaseError> {
+        let from_ts = from.unwrap_or_else(|| Utc::now() - chrono::Duration::hours(24));
+        let to_ts = to.unwrap_or_else(Utc::now);
+
+        let active_agents: i64 = sqlx::query_scalar(
+            r#"
+            SELECT COUNT(*) FROM agents
+            WHERE project_id = $1 AND last_seen_at >= now() - interval '24 hours'
+            "#,
+        )
+        .bind(project_id)
+        .fetch_one(self.pool)
+        .await
+        .unwrap_or(0);
+
+        let summary_row = sqlx::query(
+            r#"
+            SELECT
+                COUNT(*) AS total_traces,
+                COUNT(*) FILTER (WHERE status = 'error' OR error_span_count > 0) AS error_traces,
+                COALESCE(SUM(total_input_tokens), 0)::BIGINT AS input_tokens,
+                COALESCE(SUM(total_output_tokens), 0)::BIGINT AS output_tokens,
+                COALESCE(percentile_cont(0.50) WITHIN GROUP (ORDER BY duration_ms), 0.0)::FLOAT8 AS p50_duration,
+                COALESCE(percentile_cont(0.95) WITHIN GROUP (ORDER BY duration_ms), 0.0)::FLOAT8 AS p95_duration
+            FROM traces
+            WHERE project_id = $1
+              AND ($2::UUID IS NULL OR environment_id = $2)
+              AND started_at >= $3 AND started_at <= $4
+            "#,
+        )
+        .bind(project_id)
+        .bind(environment_id)
+        .bind(from_ts)
+        .bind(to_ts)
+        .fetch_one(self.pool)
+        .await?;
+
+        let total_traces: i64 = summary_row.get("total_traces");
+        let error_traces: i64 = summary_row.get("error_traces");
+        let input_tokens: i64 = summary_row.get("input_tokens");
+        let output_tokens: i64 = summary_row.get("output_tokens");
+        let p50: f64 = summary_row.get("p50_duration");
+        let p95: f64 = summary_row.get("p95_duration");
+
+        let error_rate = if total_traces > 0 {
+            (error_traces as f64) / (total_traces as f64)
+        } else {
+            0.0
+        };
+
+        let recent_trace_rows = sqlx::query(
+            r#"
+            SELECT id, organization_id, project_id, environment_id, agent_id, session_id,
+                   trace_id, root_span_id, name, status, started_at, ended_at, duration_ms,
+                   span_count, error_span_count, total_input_tokens, total_output_tokens,
+                   total_cached_input_tokens, total_reasoning_tokens, estimated_cost,
+                   has_unpriced_usage, currency, resource_attributes, attributes,
+                   received_at, finalized_at, created_at, updated_at
+            FROM traces
+            WHERE project_id = $1
+              AND ($2::UUID IS NULL OR environment_id = $2)
+            ORDER BY started_at DESC
+            LIMIT 5
+            "#,
+        )
+        .bind(project_id)
+        .bind(environment_id)
+        .fetch_all(self.pool)
+        .await?;
+
+        let mut recent_traces = Vec::with_capacity(recent_trace_rows.len());
+        for r in &recent_trace_rows {
+            recent_traces.push(parse_trace_row(r)?);
+        }
+
+        let recent_error_rows = sqlx::query(
+            r#"
+            SELECT id, organization_id, project_id, environment_id, agent_id, session_id,
+                   trace_id, root_span_id, name, status, started_at, ended_at, duration_ms,
+                   span_count, error_span_count, total_input_tokens, total_output_tokens,
+                   total_cached_input_tokens, total_reasoning_tokens, estimated_cost,
+                   has_unpriced_usage, currency, resource_attributes, attributes,
+                   received_at, finalized_at, created_at, updated_at
+            FROM traces
+            WHERE project_id = $1
+              AND ($2::UUID IS NULL OR environment_id = $2)
+              AND (status = 'error' OR error_span_count > 0)
+            ORDER BY started_at DESC
+            LIMIT 5
+            "#,
+        )
+        .bind(project_id)
+        .bind(environment_id)
+        .fetch_all(self.pool)
+        .await?;
+
+        let mut recent_errors = Vec::with_capacity(recent_error_rows.len());
+        for r in &recent_error_rows {
+            recent_errors.push(parse_trace_row(r)?);
+        }
+
+        Ok(ProjectOverviewMetrics {
+            active_agents_count: active_agents,
+            total_traces_count: total_traces,
+            error_rate,
+            total_input_tokens: input_tokens,
+            total_output_tokens: output_tokens,
+            total_tokens: input_tokens + output_tokens,
+            p50_duration_ms: Some(p50),
+            p95_duration_ms: Some(p95),
+            recent_traces,
+            recent_errors,
+        })
     }
 
     pub async fn finalize_trace(
@@ -1913,6 +2600,58 @@ impl<'a> TracesRepository<'a> {
     }
 }
 
+pub fn parse_span_row(r: &PgRow) -> Result<Span, DatabaseError> {
+    let tid_raw: String = r.get("trace_id");
+    let parsed_trace_id =
+        TraceId::new(tid_raw).map_err(|e| DatabaseError::NotFound(e.to_string()))?;
+
+    let sid_raw: String = r.get("span_id");
+    let parsed_span_id =
+        SpanId::new(sid_raw).map_err(|e| DatabaseError::NotFound(e.to_string()))?;
+
+    let parent_sid_raw: Option<String> = r.get("parent_span_id");
+    let parsed_parent_span_id = match parent_sid_raw {
+        Some(sid) => Some(SpanId::new(sid).map_err(|e| DatabaseError::NotFound(e.to_string()))?),
+        None => None,
+    };
+
+    let span_type_raw: String = r.get("span_type");
+    let span_type = span_type_raw
+        .parse::<SpanType>()
+        .unwrap_or(SpanType::Custom);
+
+    let status_raw: String = r.get("status");
+    let status = status_raw
+        .parse::<TraceStatus>()
+        .unwrap_or(TraceStatus::Unset);
+
+    Ok(Span {
+        id: r.get("id"),
+        organization_id: r.get("organization_id"),
+        project_id: r.get("project_id"),
+        trace_id: parsed_trace_id,
+        span_id: parsed_span_id,
+        parent_span_id: parsed_parent_span_id,
+        agent_id: r.get("agent_id"),
+        name: r.get("name"),
+        span_type,
+        status,
+        started_at: r.get("started_at"),
+        ended_at: r.get("ended_at"),
+        duration_ms: r.get("duration_ms"),
+        provider: r.get("provider"),
+        model: r.get("model"),
+        tool_name: r.get("tool_name"),
+        attributes: r.get("attributes"),
+        resource_attributes: r.get("resource_attributes"),
+        scope_attributes: r.get("scope_attributes"),
+        payload_s3_key: r.get("payload_s3_key"),
+        error: r.get("error"),
+        received_at: r.get("received_at"),
+        created_at: r.get("created_at"),
+    })
+}
+
 // ---------------------------------------------------------------------------
 // Spans Repository
 // ---------------------------------------------------------------------------
@@ -2022,62 +2761,250 @@ impl<'a> SpansRepository<'a> {
         .fetch_all(self.pool)
         .await?;
 
-        let mut spans = Vec::with_capacity(rows.len());
+        rows.iter().map(parse_span_row).collect()
+    }
+
+    pub async fn get_by_id(
+        &self,
+        project_id: Uuid,
+        id: Uuid,
+    ) -> Result<Option<Span>, DatabaseError> {
+        let row = sqlx::query(
+            r#"
+            SELECT id, organization_id, project_id, trace_id, span_id, parent_span_id,
+                   agent_id, name, span_type, status, started_at, ended_at, duration_ms,
+                   provider, model, tool_name, attributes, resource_attributes,
+                   scope_attributes, payload_s3_key, error, received_at, created_at
+            FROM spans
+            WHERE project_id = $1 AND id = $2
+            "#,
+        )
+        .bind(project_id)
+        .bind(id)
+        .fetch_optional(self.pool)
+        .await?;
+
+        row.as_ref().map(parse_span_row).transpose()
+    }
+
+    pub async fn list_events_for_span(
+        &self,
+        project_id: Uuid,
+        trace_id: &TraceId,
+        span_id: &SpanId,
+    ) -> Result<Vec<SpanEvent>, DatabaseError> {
+        let rows = sqlx::query(
+            r#"
+            SELECT id, project_id, trace_id, span_id, event_index, event_name,
+                   occurred_at, attributes, created_at
+            FROM span_events
+            WHERE project_id = $1 AND trace_id = $2 AND span_id = $3
+            ORDER BY event_index ASC
+            "#,
+        )
+        .bind(project_id)
+        .bind(trace_id.as_str())
+        .bind(span_id.as_str())
+        .fetch_all(self.pool)
+        .await?;
+
+        let mut events = Vec::with_capacity(rows.len());
         for r in rows {
             let tid_raw: String = r.get("trace_id");
-            let parsed_trace_id =
-                TraceId::new(tid_raw).map_err(|e| DatabaseError::NotFound(e.to_string()))?;
-
+            let tid = TraceId::new(tid_raw).map_err(|e| DatabaseError::NotFound(e.to_string()))?;
             let sid_raw: String = r.get("span_id");
-            let parsed_span_id =
-                SpanId::new(sid_raw).map_err(|e| DatabaseError::NotFound(e.to_string()))?;
-
-            let parent_sid_raw: Option<String> = r.get("parent_span_id");
-            let parsed_parent_span_id = match parent_sid_raw {
-                Some(sid) => {
-                    Some(SpanId::new(sid).map_err(|e| DatabaseError::NotFound(e.to_string()))?)
-                }
-                None => None,
-            };
-
-            let span_type_raw: String = r.get("span_type");
-            let span_type = span_type_raw
-                .parse::<SpanType>()
-                .unwrap_or(SpanType::Custom);
-
-            let status_raw: String = r.get("status");
-            let status = status_raw
-                .parse::<TraceStatus>()
-                .unwrap_or(TraceStatus::Unset);
-
-            spans.push(Span {
+            let sid = SpanId::new(sid_raw).map_err(|e| DatabaseError::NotFound(e.to_string()))?;
+            events.push(SpanEvent {
                 id: r.get("id"),
-                organization_id: r.get("organization_id"),
                 project_id: r.get("project_id"),
-                trace_id: parsed_trace_id,
-                span_id: parsed_span_id,
-                parent_span_id: parsed_parent_span_id,
-                agent_id: r.get("agent_id"),
-                name: r.get("name"),
-                span_type,
-                status,
-                started_at: r.get("started_at"),
-                ended_at: r.get("ended_at"),
-                duration_ms: r.get("duration_ms"),
-                provider: r.get("provider"),
-                model: r.get("model"),
-                tool_name: r.get("tool_name"),
+                trace_id: tid,
+                span_id: sid,
+                event_index: r.get("event_index"),
+                event_name: r.get("event_name"),
+                occurred_at: r.get("occurred_at"),
                 attributes: r.get("attributes"),
-                resource_attributes: r.get("resource_attributes"),
-                scope_attributes: r.get("scope_attributes"),
-                payload_s3_key: r.get("payload_s3_key"),
-                error: r.get("error"),
-                received_at: r.get("received_at"),
                 created_at: r.get("created_at"),
             });
         }
+        Ok(events)
+    }
 
-        Ok(spans)
+    pub async fn list_links_for_span(
+        &self,
+        project_id: Uuid,
+        trace_id: &TraceId,
+        span_id: &SpanId,
+    ) -> Result<Vec<SpanLink>, DatabaseError> {
+        let rows = sqlx::query(
+            r#"
+            SELECT id, project_id, trace_id, span_id, link_index, linked_trace_id,
+                   linked_span_id, attributes, created_at
+            FROM span_links
+            WHERE project_id = $1 AND trace_id = $2 AND span_id = $3
+            ORDER BY link_index ASC
+            "#,
+        )
+        .bind(project_id)
+        .bind(trace_id.as_str())
+        .bind(span_id.as_str())
+        .fetch_all(self.pool)
+        .await?;
+
+        let mut links = Vec::with_capacity(rows.len());
+        for r in rows {
+            let tid_raw: String = r.get("trace_id");
+            let tid = TraceId::new(tid_raw).map_err(|e| DatabaseError::NotFound(e.to_string()))?;
+            let sid_raw: String = r.get("span_id");
+            let sid = SpanId::new(sid_raw).map_err(|e| DatabaseError::NotFound(e.to_string()))?;
+            links.push(SpanLink {
+                id: r.get("id"),
+                project_id: r.get("project_id"),
+                trace_id: tid,
+                span_id: sid,
+                link_index: r.get("link_index"),
+                linked_trace_id: r.get("linked_trace_id"),
+                linked_span_id: r.get("linked_span_id"),
+                attributes: r.get("attributes"),
+                created_at: r.get("created_at"),
+            });
+        }
+        Ok(links)
+    }
+
+    pub async fn get_usage_for_span(
+        &self,
+        project_id: Uuid,
+        trace_id: &TraceId,
+        span_id: &SpanId,
+    ) -> Result<Option<TokenUsage>, DatabaseError> {
+        let row = sqlx::query(
+            r#"
+            SELECT id, organization_id, project_id, trace_id, span_id, provider, model,
+                   input_tokens, output_tokens, cached_input_tokens, reasoning_tokens,
+                   cost_estimate, currency, pricing_version, input_rate_per_million,
+                   output_rate_per_million, cached_rate_per_million, usage_source,
+                   recorded_at, created_at
+            FROM token_usages
+            WHERE project_id = $1 AND trace_id = $2 AND span_id = $3
+            "#,
+        )
+        .bind(project_id)
+        .bind(trace_id.as_str())
+        .bind(span_id.as_str())
+        .fetch_optional(self.pool)
+        .await?;
+
+        match row {
+            Some(r) => {
+                let tid_raw: String = r.get("trace_id");
+                let tid =
+                    TraceId::new(tid_raw).map_err(|e| DatabaseError::NotFound(e.to_string()))?;
+                let sid_raw: String = r.get("span_id");
+                let sid =
+                    SpanId::new(sid_raw).map_err(|e| DatabaseError::NotFound(e.to_string()))?;
+                let usage_src_raw: String = r.get("usage_source");
+                let usage_source = usage_src_raw
+                    .parse::<UsageSource>()
+                    .unwrap_or(UsageSource::Estimated);
+
+                Ok(Some(TokenUsage {
+                    id: r.get("id"),
+                    organization_id: r.get("organization_id"),
+                    project_id: r.get("project_id"),
+                    trace_id: tid,
+                    span_id: sid,
+                    provider: r.get("provider"),
+                    model: r.get("model"),
+                    input_tokens: r.get("input_tokens"),
+                    output_tokens: r.get("output_tokens"),
+                    cached_input_tokens: r.get("cached_input_tokens"),
+                    reasoning_tokens: r.get("reasoning_tokens"),
+                    cost_estimate: r.get("cost_estimate"),
+                    currency: r.get("currency"),
+                    pricing_version: r.get("pricing_version"),
+                    input_rate_per_million: r.get("input_rate_per_million"),
+                    output_rate_per_million: r.get("output_rate_per_million"),
+                    cached_rate_per_million: r.get("cached_rate_per_million"),
+                    usage_source,
+                    recorded_at: r.get("recorded_at"),
+                    created_at: r.get("created_at"),
+                }))
+            }
+            None => Ok(None),
+        }
+    }
+
+    pub async fn get_span_detail(
+        &self,
+        project_id: Uuid,
+        id: Uuid,
+    ) -> Result<Option<SpanDetail>, DatabaseError> {
+        let span = match self.get_by_id(project_id, id).await? {
+            Some(s) => s,
+            None => return Ok(None),
+        };
+
+        let events = self
+            .list_events_for_span(project_id, &span.trace_id, &span.span_id)
+            .await?;
+        let links = self
+            .list_links_for_span(project_id, &span.trace_id, &span.span_id)
+            .await?;
+        let token_usage = self
+            .get_usage_for_span(project_id, &span.trace_id, &span.span_id)
+            .await?;
+
+        Ok(Some(SpanDetail {
+            span,
+            events,
+            links,
+            token_usage,
+        }))
+    }
+
+    pub async fn get_by_id_global(&self, id: Uuid) -> Result<Option<Span>, DatabaseError> {
+        let row = sqlx::query(
+            r#"
+            SELECT id, organization_id, project_id, trace_id, span_id, parent_span_id,
+                   agent_id, name, span_type, status, started_at, ended_at, duration_ms,
+                   provider, model, tool_name, attributes, resource_attributes,
+                   scope_attributes, payload_s3_key, error, received_at, created_at
+            FROM spans
+            WHERE id = $1
+            "#,
+        )
+        .bind(id)
+        .fetch_optional(self.pool)
+        .await?;
+
+        row.as_ref().map(parse_span_row).transpose()
+    }
+
+    pub async fn get_span_detail_global(
+        &self,
+        id: Uuid,
+    ) -> Result<Option<SpanDetail>, DatabaseError> {
+        let span = match self.get_by_id_global(id).await? {
+            Some(s) => s,
+            None => return Ok(None),
+        };
+
+        let events = self
+            .list_events_for_span(span.project_id, &span.trace_id, &span.span_id)
+            .await?;
+        let links = self
+            .list_links_for_span(span.project_id, &span.trace_id, &span.span_id)
+            .await?;
+        let token_usage = self
+            .get_usage_for_span(span.project_id, &span.trace_id, &span.span_id)
+            .await?;
+
+        Ok(Some(SpanDetail {
+            span,
+            events,
+            links,
+            token_usage,
+        }))
     }
 }
 

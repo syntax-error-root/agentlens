@@ -402,3 +402,281 @@ paths:
       responses:
         '200':
           description: Key revoked
+
+  /api/v1/auth/bootstrap/status:
+    get:
+      summary: Check if initial instance bootstrap is available
+      responses:
+        '200':
+          description: Bootstrap availability status
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [can_bootstrap]
+                properties:
+                  can_bootstrap: { type: boolean }
+
+  /api/v1/projects/{project_id}/overview:
+    get:
+      summary: Retrieve project metrics summary
+      parameters:
+        - name: project_id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+        - name: environment_id
+          in: query
+          required: false
+          schema: { type: string, format: uuid }
+        - name: from
+          in: query
+          required: false
+          schema: { type: string, format: date-time }
+        - name: to
+          in: query
+          required: false
+          schema: { type: string, format: date-time }
+      responses:
+        '200':
+          description: Aggregated project overview metrics
+
+  /api/v1/projects/{project_id}/agents:
+    get:
+      summary: List registered agents in project
+      parameters:
+        - name: project_id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        '200':
+          description: List of agents
+    post:
+      summary: Create or register an agent
+      parameters:
+        - name: project_id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name]
+              properties:
+                name: { type: string }
+                framework: { type: string }
+                language: { type: string }
+                description: { type: string }
+                metadata: { type: object }
+      responses:
+        '201':
+          description: Created agent
+
+  /api/v1/agents/{agent_id}:
+    get:
+      summary: Get agent by id
+      parameters:
+        - name: agent_id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        '200':
+          description: Agent details
+    patch:
+      summary: Update agent metadata
+      parameters:
+        - name: agent_id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                framework: { type: string }
+                language: { type: string }
+                description: { type: string }
+                metadata: { type: object }
+      responses:
+        '200':
+          description: Updated agent
+
+  /api/v1/agents/{agent_id}/versions:
+    get:
+      summary: List agent versions
+      parameters:
+        - name: agent_id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        '200':
+          description: List of agent versions
+
+  /api/v1/agents/{agent_id}/traces:
+    get:
+      summary: List traces for agent
+      parameters:
+        - name: agent_id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+        - name: limit
+          in: query
+          required: false
+          schema: { type: integer, default: 50 }
+      responses:
+        '200':
+          description: List of traces
+
+  /api/v1/traces:
+    get:
+      summary: Keyset paginated trace query
+      parameters:
+        - name: project_id
+          in: query
+          required: true
+          schema: { type: string, format: uuid }
+        - name: environment_id
+          in: query
+          required: false
+          schema: { type: string, format: uuid }
+        - name: agent_id
+          in: query
+          required: false
+          schema: { type: string, format: uuid }
+        - name: status
+          in: query
+          required: false
+          schema: { type: string }
+        - name: provider
+          in: query
+          required: false
+          schema: { type: string }
+        - name: model
+          in: query
+          required: false
+          schema: { type: string }
+        - name: span_type
+          in: query
+          required: false
+          schema: { type: string }
+        - name: min_duration_ms
+          in: query
+          required: false
+          schema: { type: integer }
+        - name: max_duration_ms
+          in: query
+          required: false
+          schema: { type: integer }
+        - name: from
+          in: query
+          required: false
+          schema: { type: string, format: date-time }
+        - name: to
+          in: query
+          required: false
+          schema: { type: string, format: date-time }
+        - name: search_trace_id
+          in: query
+          required: false
+          schema: { type: string }
+        - name: cursor
+          in: query
+          required: false
+          schema: { type: string }
+        - name: limit
+          in: query
+          required: false
+          schema: { type: integer, default: 50 }
+      responses:
+        '200':
+          description: Keyset paginated trace result
+
+  /api/v1/traces/{trace_record_id}:
+    get:
+      summary: Get trace by UUID or 32-hex trace ID
+      parameters:
+        - name: trace_record_id
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        '200':
+          description: Trace record
+
+  /api/v1/traces/{trace_record_id}/spans:
+    get:
+      summary: List all spans for a trace
+      parameters:
+        - name: trace_record_id
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        '200':
+          description: Ordered list of spans for waterfall visualization
+
+  /api/v1/spans/{span_record_id}:
+    get:
+      summary: Get span detail including events, links, and token usage
+      parameters:
+        - name: span_record_id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        '200':
+          description: Span detail
+
+  /api/v1/sessions:
+    get:
+      summary: List sessions in project
+      parameters:
+        - name: project_id
+          in: query
+          required: true
+          schema: { type: string, format: uuid }
+        - name: limit
+          in: query
+          required: false
+          schema: { type: integer, default: 50 }
+      responses:
+        '200':
+          description: List of sessions
+
+  /api/v1/sessions/{session_id}:
+    get:
+      summary: Get session by ID
+      parameters:
+        - name: session_id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        '200':
+          description: Session record
+
+  /api/v1/sessions/{session_id}/traces:
+    get:
+      summary: List traces belonging to a session
+      parameters:
+        - name: session_id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+        - name: limit
+          in: query
+          required: false
+          schema: { type: integer, default: 50 }
+      responses:
+        '200':
+          description: List of session traces
