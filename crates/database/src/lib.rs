@@ -312,6 +312,73 @@ impl<'a> UsersRepository<'a> {
 
         Ok(row)
     }
+
+    pub async fn get_by_oidc(
+        &self,
+        issuer: &str,
+        subject: &str,
+    ) -> Result<Option<User>, DatabaseError> {
+        let row = sqlx::query(
+            r#"
+            SELECT id, email, password_hash, oidc_subject, oidc_issuer,
+                   display_name, status, created_at, updated_at
+            FROM users
+            WHERE oidc_issuer = $1 AND oidc_subject = $2
+            "#,
+        )
+        .bind(issuer)
+        .bind(subject)
+        .map(|r: PgRow| User {
+            id: r.get("id"),
+            email: r.get("email"),
+            password_hash: r.get("password_hash"),
+            oidc_subject: r.get("oidc_subject"),
+            oidc_issuer: r.get("oidc_issuer"),
+            display_name: r.get("display_name"),
+            status: r.get("status"),
+            created_at: r.get("created_at"),
+            updated_at: r.get("updated_at"),
+        })
+        .fetch_optional(self.pool)
+        .await?;
+
+        Ok(row)
+    }
+
+    pub async fn link_oidc(
+        &self,
+        user_id: Uuid,
+        issuer: &str,
+        subject: &str,
+    ) -> Result<User, DatabaseError> {
+        let row = sqlx::query(
+            r#"
+            UPDATE users
+            SET oidc_issuer = $1, oidc_subject = $2, updated_at = now()
+            WHERE id = $3
+            RETURNING id, email, password_hash, oidc_subject, oidc_issuer,
+                      display_name, status, created_at, updated_at
+            "#,
+        )
+        .bind(issuer)
+        .bind(subject)
+        .bind(user_id)
+        .map(|r: PgRow| User {
+            id: r.get("id"),
+            email: r.get("email"),
+            password_hash: r.get("password_hash"),
+            oidc_subject: r.get("oidc_subject"),
+            oidc_issuer: r.get("oidc_issuer"),
+            display_name: r.get("display_name"),
+            status: r.get("status"),
+            created_at: r.get("created_at"),
+            updated_at: r.get("updated_at"),
+        })
+        .fetch_one(self.pool)
+        .await?;
+
+        Ok(row)
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -5177,5 +5244,94 @@ impl<'a> AgentHealthRepository<'a> {
             status_explanation,
             evaluated_thresholds,
         })
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Retention Repository
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone)]
+pub struct RetentionCandidate {
+    pub id: Uuid,
+    pub project_id: Uuid,
+    pub trace_id: String,
+}
+
+pub struct RetentionRepository<'a> {
+    pool: &'a DbPool,
+}
+
+impl<'a> RetentionRepository<'a> {
+    #[must_use]
+    pub fn new(pool: &'a DbPool) -> Self {
+        Self { pool }
+    }
+
+    pub async fn find_expired_traces(
+        &self,
+        batch_size: i64,
+    ) -> Result<Vec<RetentionCandidate>, DatabaseError> {
+        let rows = sqlx::query(
+            r#"
+            SELECT t.id, t.project_id, t.trace_id
+            FROM traces t
+            JOIN projects p ON p.id = t.project_id
+            WHERE t.started_at < now() - (p.retention_days || ' days')::interval
+            ORDER BY t.started_at ASC
+            LIMIT $1
+            "#,
+        )
+        .bind(batch_size)
+        .map(|r: PgRow| RetentionCandidate {
+            id: r.get("id"),
+            project_id: r.get("project_id"),
+            trace_id: r.get("trace_id"),
+        })
+        .fetch_all(self.pool)
+        .await?;
+
+        Ok(rows)
+    }
+
+    pub async fn get_s3_keys_for_traces(
+        &self,
+        trace_ids: &[String],
+    ) -> Result<Vec<String>, DatabaseError> {
+        if trace_ids.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let rows = sqlx::query(
+            r#"
+            SELECT DISTINCT payload_s3_key
+            FROM spans
+            WHERE trace_id = ANY($1) AND payload_s3_key IS NOT NULL
+            "#,
+        )
+        .bind(trace_ids)
+        .map(|r: PgRow| r.get::<String, _>("payload_s3_key"))
+        .fetch_all(self.pool)
+        .await?;
+
+        Ok(rows)
+    }
+
+    pub async fn delete_traces_by_id(&self, trace_ids: &[Uuid]) -> Result<u64, DatabaseError> {
+        if trace_ids.is_empty() {
+            return Ok(0);
+        }
+
+        let res = sqlx::query(
+            r#"
+            DELETE FROM traces
+            WHERE id = ANY($1)
+            "#,
+        )
+        .bind(trace_ids)
+        .execute(self.pool)
+        .await?;
+
+        Ok(res.rows_affected())
     }
 }
