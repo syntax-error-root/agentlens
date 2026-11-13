@@ -30,6 +30,7 @@ pub struct AnalyticsQueryParams {
     pub to: Option<DateTime<Utc>>,
 }
 
+#[allow(clippy::result_large_err)]
 async fn authorize_project_access(
     state: &AppState,
     session: &SessionPayload,
