@@ -5,13 +5,17 @@
 
 use agentlens_config::AppConfig;
 use agentlens_domain::{
-    decode_cursor, encode_cursor, Agent, AgentVersion, ApiKey, AuditLog, Environment, OrgRole,
-    Organization, OrganizationMember, OutboxJob, Project, ProjectOverviewMetrics, Session, Span,
-    SpanDetail, SpanEvent, SpanId, SpanLink, SpanType, TokenUsage, Trace, TraceId,
-    TraceQueryFilters, TraceQueryResult, TraceStatus, UsageSource, User,
+    decode_cursor, encode_cursor, Agent, AgentAnalyticsItem, AgentVersion, AnalyticsFilters,
+    AnalyticsOverview, ApiKey, AuditLog, CostAnalyticsResult, CostTimePoint, Environment,
+    ErrorAnalyticsResult, ErrorTimePoint, LatencyAnalyticsResult, ModelAnalyticsItem, ModelPricing,
+    OrgRole, Organization, OrganizationMember, OutboxJob, Project, ProjectOverviewMetrics, Session,
+    Span, SpanDetail, SpanEvent, SpanId, SpanLink, SpanType, TokenAnalyticsResult, TokenUsage,
+    TokenUsageTimePoint, ToolAnalyticsItem, TopErrorItem, Trace, TraceId, TraceQueryFilters,
+    TraceQueryResult, TraceStatus, UsageSource, User,
 };
 use agentlens_telemetry::NormalizedSpan;
 use chrono::{DateTime, Utc};
+use rust_decimal::Decimal;
 use sqlx::postgres::{PgPool, PgPoolOptions, PgRow};
 use sqlx::Row;
 use std::collections::HashMap;
@@ -2452,7 +2456,8 @@ impl<'a> TracesRepository<'a> {
                     COALESCE(SUM(output_tokens), 0) AS total_output,
                     COALESCE(SUM(cached_input_tokens), 0) AS total_cached_input,
                     COALESCE(SUM(reasoning_tokens), 0) AS total_reasoning,
-                    COALESCE(SUM(cost_estimate), 0.0) AS total_cost
+                    SUM(cost_estimate) AS total_cost,
+                    BOOL_OR(cost_estimate IS NULL) AS has_unpriced
                 FROM token_usages
                 WHERE project_id = $1 AND trace_id = $2
             ),
@@ -2481,6 +2486,7 @@ impl<'a> TracesRepository<'a> {
                 total_cached_input_tokens = COALESCE(usage_summary.total_cached_input, 0),
                 total_reasoning_tokens = COALESCE(usage_summary.total_reasoning, 0),
                 estimated_cost = usage_summary.total_cost,
+                has_unpriced_usage = COALESCE(usage_summary.has_unpriced, FALSE),
                 root_span_id = COALESCE(root_info.root_span_id, traces.root_span_id),
                 name = COALESCE(root_info.root_name, traces.name),
                 agent_id = COALESCE(root_info.root_agent_id, traces.agent_id),
@@ -3069,6 +3075,94 @@ impl<'a> TokenUsagesRepository<'a> {
 
         Ok(())
     }
+
+    pub async fn list_by_trace(
+        &self,
+        project_id: Uuid,
+        trace_id: &TraceId,
+    ) -> Result<Vec<TokenUsage>, DatabaseError> {
+        let trace_id_str = trace_id.as_str();
+        let rows = sqlx::query(
+            r#"
+            SELECT
+                id, organization_id, project_id, trace_id, span_id, provider, model,
+                input_tokens, output_tokens, cached_input_tokens, reasoning_tokens,
+                cost_estimate, currency, pricing_version, input_rate_per_million,
+                output_rate_per_million, cached_rate_per_million, usage_source,
+                recorded_at, created_at
+            FROM token_usages
+            WHERE project_id = $1 AND trace_id = $2
+            ORDER BY recorded_at ASC
+            "#,
+        )
+        .bind(project_id)
+        .bind(trace_id_str)
+        .fetch_all(self.pool)
+        .await?;
+
+        let mut usages = Vec::with_capacity(rows.len());
+        for r in rows {
+            let tid: String = r.get("trace_id");
+            let sid: String = r.get("span_id");
+            let source_str: String = r.get("usage_source");
+            usages.push(TokenUsage {
+                id: r.get("id"),
+                organization_id: r.get("organization_id"),
+                project_id: r.get("project_id"),
+                trace_id: TraceId::new(tid).map_err(|e| DatabaseError::NotFound(e.to_string()))?,
+                span_id: SpanId::new(sid).map_err(|e| DatabaseError::NotFound(e.to_string()))?,
+                provider: r.get("provider"),
+                model: r.get("model"),
+                input_tokens: r.get("input_tokens"),
+                output_tokens: r.get("output_tokens"),
+                cached_input_tokens: r.get("cached_input_tokens"),
+                reasoning_tokens: r.get("reasoning_tokens"),
+                cost_estimate: r.get("cost_estimate"),
+                currency: r.get("currency"),
+                pricing_version: r.get("pricing_version"),
+                input_rate_per_million: r.get("input_rate_per_million"),
+                output_rate_per_million: r.get("output_rate_per_million"),
+                cached_rate_per_million: r.get("cached_rate_per_million"),
+                usage_source: UsageSource::from_str(&source_str)
+                    .map_err(|e| DatabaseError::NotFound(e.to_string()))?,
+                recorded_at: r.get("recorded_at"),
+                created_at: r.get("created_at"),
+            });
+        }
+        Ok(usages)
+    }
+
+    pub async fn update_pricing_evaluation(
+        &self,
+        id: Uuid,
+        cost_estimate: Option<Decimal>,
+        pricing_version: Option<&str>,
+        input_rate: Option<Decimal>,
+        output_rate: Option<Decimal>,
+        cached_rate: Option<Decimal>,
+    ) -> Result<(), DatabaseError> {
+        sqlx::query(
+            r#"
+            UPDATE token_usages
+            SET cost_estimate = $1,
+                pricing_version = $2,
+                input_rate_per_million = $3,
+                output_rate_per_million = $4,
+                cached_rate_per_million = $5
+            WHERE id = $6
+            "#,
+        )
+        .bind(cost_estimate)
+        .bind(pricing_version)
+        .bind(input_rate)
+        .bind(output_rate)
+        .bind(cached_rate)
+        .bind(id)
+        .execute(self.pool)
+        .await?;
+
+        Ok(())
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -3306,5 +3400,762 @@ impl<'a> OutboxRepository<'a> {
         .await?;
 
         Ok(row)
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Model Pricing Repository
+// ---------------------------------------------------------------------------
+
+pub struct ModelPricingRepository<'a> {
+    pool: &'a DbPool,
+}
+
+impl<'a> ModelPricingRepository<'a> {
+    pub fn new(pool: &'a DbPool) -> Self {
+        Self { pool }
+    }
+
+    pub async fn list_all(&self) -> Result<Vec<ModelPricing>, DatabaseError> {
+        let rows = sqlx::query(
+            r#"
+            SELECT
+                id, provider, model_pattern, match_type, currency,
+                input_per_million, output_per_million, cached_input_per_million,
+                effective_from, effective_until, source_url, source_checked_at,
+                version, created_at
+            FROM model_pricing
+            ORDER BY provider ASC, model_pattern ASC
+            "#,
+        )
+        .fetch_all(self.pool)
+        .await?;
+
+        Ok(rows
+            .into_iter()
+            .map(|r| ModelPricing {
+                id: r.get("id"),
+                provider: r.get("provider"),
+                model_pattern: r.get("model_pattern"),
+                match_type: r.get("match_type"),
+                currency: r.get("currency"),
+                input_per_million: r.get("input_per_million"),
+                output_per_million: r.get("output_per_million"),
+                cached_input_per_million: r.get("cached_input_per_million"),
+                effective_from: r.get("effective_from"),
+                effective_until: r.get("effective_until"),
+                source_url: r.get("source_url"),
+                source_checked_at: r.get("source_checked_at"),
+                version: r.get("version"),
+                created_at: r.get("created_at"),
+            })
+            .collect())
+    }
+
+    pub async fn create(&self, card: &ModelPricing) -> Result<ModelPricing, DatabaseError> {
+        let row = sqlx::query(
+            r#"
+            INSERT INTO model_pricing (
+                id, provider, model_pattern, match_type, currency,
+                input_per_million, output_per_million, cached_input_per_million,
+                effective_from, effective_until, source_url, source_checked_at,
+                version
+            ) VALUES (
+                $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13
+            )
+            RETURNING id, provider, model_pattern, match_type, currency,
+                      input_per_million, output_per_million, cached_input_per_million,
+                      effective_from, effective_until, source_url, source_checked_at,
+                      version, created_at
+            "#,
+        )
+        .bind(card.id)
+        .bind(&card.provider)
+        .bind(&card.model_pattern)
+        .bind(&card.match_type)
+        .bind(&card.currency)
+        .bind(card.input_per_million)
+        .bind(card.output_per_million)
+        .bind(card.cached_input_per_million)
+        .bind(card.effective_from)
+        .bind(card.effective_until)
+        .bind(&card.source_url)
+        .bind(card.source_checked_at)
+        .bind(&card.version)
+        .fetch_one(self.pool)
+        .await?;
+
+        Ok(ModelPricing {
+            id: row.get("id"),
+            provider: row.get("provider"),
+            model_pattern: row.get("model_pattern"),
+            match_type: row.get("match_type"),
+            currency: row.get("currency"),
+            input_per_million: row.get("input_per_million"),
+            output_per_million: row.get("output_per_million"),
+            cached_input_per_million: row.get("cached_input_per_million"),
+            effective_from: row.get("effective_from"),
+            effective_until: row.get("effective_until"),
+            source_url: row.get("source_url"),
+            source_checked_at: row.get("source_checked_at"),
+            version: row.get("version"),
+            created_at: row.get("created_at"),
+        })
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Daily Metrics Repository
+// ---------------------------------------------------------------------------
+
+pub struct DailyMetricsRepository<'a> {
+    pool: &'a DbPool,
+}
+
+impl<'a> DailyMetricsRepository<'a> {
+    pub fn new(pool: &'a DbPool) -> Self {
+        Self { pool }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub async fn record_trace_metric(
+        &self,
+        organization_id: Uuid,
+        project_id: Uuid,
+        environment_id: Uuid,
+        metric_date: chrono::NaiveDate,
+        duration_ms: Option<i64>,
+        cost: Option<Decimal>,
+        input_tokens: i64,
+        output_tokens: i64,
+        is_error: bool,
+    ) -> Result<(), DatabaseError> {
+        let dur_dec = duration_ms.map(Decimal::from);
+        sqlx::query(
+            r#"
+            INSERT INTO daily_metrics (
+                organization_id, project_id, environment_id, metric_date,
+                dimension_type, dimension_key, metric_name, count_value,
+                sum_value, min_value, max_value, estimated_cost, updated_at
+            ) VALUES (
+                $1, $2, $3, $4, 'overview', 'total', 'traces', 1,
+                COALESCE($5, 0), $5, $5, $6, now()
+            )
+            ON CONFLICT (project_id, environment_id, metric_date, dimension_type, dimension_key, metric_name)
+            DO UPDATE SET
+                count_value = daily_metrics.count_value + 1,
+                sum_value = daily_metrics.sum_value + COALESCE(EXCLUDED.sum_value, 0),
+                min_value = LEAST(daily_metrics.min_value, EXCLUDED.min_value),
+                max_value = GREATEST(daily_metrics.max_value, EXCLUDED.max_value),
+                estimated_cost = CASE
+                    WHEN daily_metrics.estimated_cost IS NULL AND EXCLUDED.estimated_cost IS NULL THEN NULL
+                    ELSE COALESCE(daily_metrics.estimated_cost, 0) + COALESCE(EXCLUDED.estimated_cost, 0)
+                END,
+                updated_at = now()
+            "#,
+        )
+        .bind(organization_id)
+        .bind(project_id)
+        .bind(environment_id)
+        .bind(metric_date)
+        .bind(dur_dec)
+        .bind(cost)
+        .execute(self.pool)
+        .await?;
+
+        if is_error {
+            sqlx::query(
+                r#"
+                INSERT INTO daily_metrics (
+                    organization_id, project_id, environment_id, metric_date,
+                    dimension_type, dimension_key, metric_name, count_value, updated_at
+                ) VALUES (
+                    $1, $2, $3, $4, 'overview', 'total', 'errors', 1, now()
+                )
+                ON CONFLICT (project_id, environment_id, metric_date, dimension_type, dimension_key, metric_name)
+                DO UPDATE SET
+                    count_value = daily_metrics.count_value + 1,
+                    updated_at = now()
+                "#,
+            )
+            .bind(organization_id)
+            .bind(project_id)
+            .bind(environment_id)
+            .bind(metric_date)
+            .execute(self.pool)
+            .await?;
+        }
+
+        if input_tokens > 0 {
+            sqlx::query(
+                r#"
+                INSERT INTO daily_metrics (
+                    organization_id, project_id, environment_id, metric_date,
+                    dimension_type, dimension_key, metric_name, sum_value, updated_at
+                ) VALUES (
+                    $1, $2, $3, $4, 'overview', 'total', 'input_tokens', $5, now()
+                )
+                ON CONFLICT (project_id, environment_id, metric_date, dimension_type, dimension_key, metric_name)
+                DO UPDATE SET
+                    sum_value = daily_metrics.sum_value + EXCLUDED.sum_value,
+                    updated_at = now()
+                "#,
+            )
+            .bind(organization_id)
+            .bind(project_id)
+            .bind(environment_id)
+            .bind(metric_date)
+            .bind(Decimal::from(input_tokens))
+            .execute(self.pool)
+            .await?;
+        }
+
+        if output_tokens > 0 {
+            sqlx::query(
+                r#"
+                INSERT INTO daily_metrics (
+                    organization_id, project_id, environment_id, metric_date,
+                    dimension_type, dimension_key, metric_name, sum_value, updated_at
+                ) VALUES (
+                    $1, $2, $3, $4, 'overview', 'total', 'output_tokens', $5, now()
+                )
+                ON CONFLICT (project_id, environment_id, metric_date, dimension_type, dimension_key, metric_name)
+                DO UPDATE SET
+                    sum_value = daily_metrics.sum_value + EXCLUDED.sum_value,
+                    updated_at = now()
+                "#,
+            )
+            .bind(organization_id)
+            .bind(project_id)
+            .bind(environment_id)
+            .bind(metric_date)
+            .bind(Decimal::from(output_tokens))
+            .execute(self.pool)
+            .await?;
+        }
+
+        Ok(())
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Analytics Repository
+// ---------------------------------------------------------------------------
+
+pub struct AnalyticsRepository<'a> {
+    pool: &'a DbPool,
+}
+
+impl<'a> AnalyticsRepository<'a> {
+    pub fn new(pool: &'a DbPool) -> Self {
+        Self { pool }
+    }
+
+    pub async fn get_overview(
+        &self,
+        filters: &AnalyticsFilters,
+    ) -> Result<AnalyticsOverview, DatabaseError> {
+        let row = sqlx::query(
+            r#"
+            SELECT
+                COUNT(*)::BIGINT AS total_traces,
+                COUNT(*) FILTER (WHERE status = 'error')::BIGINT AS total_errors,
+                COALESCE(SUM(total_input_tokens), 0)::BIGINT AS total_input_tokens,
+                COALESCE(SUM(total_output_tokens), 0)::BIGINT AS total_output_tokens,
+                COALESCE(SUM(total_cached_input_tokens), 0)::BIGINT AS total_cached_tokens,
+                COALESCE(SUM(total_reasoning_tokens), 0)::BIGINT AS total_reasoning_tokens,
+                SUM(estimated_cost) AS total_cost,
+                BOOL_OR(has_unpriced_usage) AS has_unpriced_usage,
+                percentile_cont(0.50) WITHIN GROUP (ORDER BY duration_ms)::FLOAT8 AS p50_duration_ms,
+                percentile_cont(0.95) WITHIN GROUP (ORDER BY duration_ms)::FLOAT8 AS p95_duration_ms,
+                percentile_cont(0.99) WITHIN GROUP (ORDER BY duration_ms)::FLOAT8 AS p99_duration_ms
+            FROM traces
+            WHERE project_id = $1
+              AND ($2::UUID IS NULL OR environment_id = $2)
+              AND ($3::TIMESTAMPTZ IS NULL OR started_at >= $3)
+              AND ($4::TIMESTAMPTZ IS NULL OR started_at <= $4)
+            "#,
+        )
+        .bind(filters.project_id)
+        .bind(filters.environment_id)
+        .bind(filters.from)
+        .bind(filters.to)
+        .fetch_one(self.pool)
+        .await?;
+
+        let total_traces: i64 = row.get("total_traces");
+        let total_errors: i64 = row.get("total_errors");
+        let total_input_tokens: i64 = row.get("total_input_tokens");
+        let total_output_tokens: i64 = row.get("total_output_tokens");
+        let total_cached_tokens: i64 = row.get("total_cached_tokens");
+        let total_reasoning_tokens: i64 = row.get("total_reasoning_tokens");
+        let total_cost: Option<Decimal> = row.get("total_cost");
+        let has_unpriced_usage: Option<bool> = row.get("has_unpriced_usage");
+        let p50_duration_ms: Option<f64> = row.get("p50_duration_ms");
+        let p95_duration_ms: Option<f64> = row.get("p95_duration_ms");
+        let p99_duration_ms: Option<f64> = row.get("p99_duration_ms");
+
+        let total_tokens = total_input_tokens + total_output_tokens;
+        let error_rate = if total_traces > 0 {
+            total_errors as f64 / total_traces as f64
+        } else {
+            0.0
+        };
+
+        Ok(AnalyticsOverview {
+            total_cost,
+            has_unpriced_usage: has_unpriced_usage.unwrap_or(false),
+            total_tokens,
+            total_input_tokens,
+            total_output_tokens,
+            total_cached_tokens,
+            total_reasoning_tokens,
+            total_traces,
+            total_errors,
+            error_rate,
+            p50_duration_ms,
+            p95_duration_ms,
+            p99_duration_ms,
+        })
+    }
+
+    pub async fn get_tokens(
+        &self,
+        filters: &AnalyticsFilters,
+    ) -> Result<TokenAnalyticsResult, DatabaseError> {
+        let rows = sqlx::query(
+            r#"
+            SELECT
+                date_trunc('day', recorded_at) AS bucket_time,
+                COALESCE(SUM(input_tokens), 0)::BIGINT AS input_tokens,
+                COALESCE(SUM(output_tokens), 0)::BIGINT AS output_tokens,
+                COALESCE(SUM(cached_input_tokens), 0)::BIGINT AS cached_tokens,
+                COALESCE(SUM(reasoning_tokens), 0)::BIGINT AS reasoning_tokens
+            FROM token_usages
+            WHERE project_id = $1
+              AND ($2::TIMESTAMPTZ IS NULL OR recorded_at >= $2)
+              AND ($3::TIMESTAMPTZ IS NULL OR recorded_at <= $3)
+            GROUP BY bucket_time
+            ORDER BY bucket_time ASC
+            "#,
+        )
+        .bind(filters.project_id)
+        .bind(filters.from)
+        .bind(filters.to)
+        .fetch_all(self.pool)
+        .await?;
+
+        let mut time_series = Vec::with_capacity(rows.len());
+        let mut total_input = 0i64;
+        let mut total_output = 0i64;
+        let mut total_cached = 0i64;
+        let mut total_reasoning = 0i64;
+
+        for r in rows {
+            let timestamp: DateTime<Utc> = r.get("bucket_time");
+            let input_tokens: i64 = r.get("input_tokens");
+            let output_tokens: i64 = r.get("output_tokens");
+            let cached_tokens: i64 = r.get("cached_tokens");
+            let reasoning_tokens: i64 = r.get("reasoning_tokens");
+            let total = input_tokens + output_tokens;
+
+            total_input += input_tokens;
+            total_output += output_tokens;
+            total_cached += cached_tokens;
+            total_reasoning += reasoning_tokens;
+
+            time_series.push(TokenUsageTimePoint {
+                timestamp,
+                input_tokens,
+                output_tokens,
+                cached_tokens,
+                reasoning_tokens,
+                total_tokens: total,
+            });
+        }
+
+        let total_tokens = total_input + total_output;
+
+        Ok(TokenAnalyticsResult {
+            time_series,
+            total_input_tokens: total_input,
+            total_output_tokens: total_output,
+            total_cached_tokens: total_cached,
+            total_reasoning_tokens: total_reasoning,
+            total_tokens,
+        })
+    }
+
+    pub async fn get_costs(
+        &self,
+        filters: &AnalyticsFilters,
+    ) -> Result<CostAnalyticsResult, DatabaseError> {
+        let rows = sqlx::query(
+            r#"
+            SELECT
+                TO_CHAR(started_at, 'YYYY-MM-DD') AS bucket_date,
+                SUM(estimated_cost) AS daily_cost,
+                COUNT(*) FILTER (WHERE has_unpriced_usage = TRUE)::BIGINT AS unpriced_traces_count
+            FROM traces
+            WHERE project_id = $1
+              AND ($2::UUID IS NULL OR environment_id = $2)
+              AND ($3::TIMESTAMPTZ IS NULL OR started_at >= $3)
+              AND ($4::TIMESTAMPTZ IS NULL OR started_at <= $4)
+            GROUP BY bucket_date
+            ORDER BY bucket_date ASC
+            "#,
+        )
+        .bind(filters.project_id)
+        .bind(filters.environment_id)
+        .bind(filters.from)
+        .bind(filters.to)
+        .fetch_all(self.pool)
+        .await?;
+
+        let mut time_series = Vec::with_capacity(rows.len());
+        let mut total_cost: Option<Decimal> = None;
+        let mut total_unpriced_count = 0i64;
+
+        for r in rows {
+            let date: String = r.get("bucket_date");
+            let daily_cost: Option<Decimal> = r.get("daily_cost");
+            let unpriced_count: i64 = r.get("unpriced_traces_count");
+
+            if let Some(c) = daily_cost {
+                total_cost = Some(total_cost.unwrap_or(Decimal::ZERO) + c);
+            }
+            total_unpriced_count += unpriced_count;
+
+            time_series.push(CostTimePoint {
+                date,
+                cost: daily_cost,
+                currency: "USD".to_string(),
+                unpriced_traces_count: unpriced_count,
+            });
+        }
+
+        Ok(CostAnalyticsResult {
+            time_series,
+            total_estimated_cost: total_cost,
+            currency: "USD".to_string(),
+            unpriced_usage_count: total_unpriced_count,
+            has_unpriced_usage: total_unpriced_count > 0,
+        })
+    }
+
+    pub async fn get_models(
+        &self,
+        filters: &AnalyticsFilters,
+    ) -> Result<Vec<ModelAnalyticsItem>, DatabaseError> {
+        let rows = sqlx::query(
+            r#"
+            SELECT
+                provider,
+                model,
+                COUNT(*)::BIGINT AS call_count,
+                COALESCE(SUM(input_tokens), 0)::BIGINT AS total_input_tokens,
+                COALESCE(SUM(output_tokens), 0)::BIGINT AS total_output_tokens,
+                COALESCE(SUM(cached_input_tokens), 0)::BIGINT AS total_cached_tokens,
+                COALESCE(SUM(reasoning_tokens), 0)::BIGINT AS total_reasoning_tokens,
+                SUM(cost_estimate) AS estimated_cost,
+                COALESCE(MAX(currency), 'USD') AS currency,
+                BOOL_OR(cost_estimate IS NULL) AS has_unpriced
+            FROM token_usages
+            WHERE project_id = $1
+              AND ($2::TIMESTAMPTZ IS NULL OR recorded_at >= $2)
+              AND ($3::TIMESTAMPTZ IS NULL OR recorded_at <= $3)
+            GROUP BY provider, model
+            ORDER BY (COALESCE(SUM(input_tokens), 0) + COALESCE(SUM(output_tokens), 0)) DESC
+            "#,
+        )
+        .bind(filters.project_id)
+        .bind(filters.from)
+        .bind(filters.to)
+        .fetch_all(self.pool)
+        .await?;
+
+        Ok(rows
+            .into_iter()
+            .map(|r| {
+                let input: i64 = r.get("total_input_tokens");
+                let output: i64 = r.get("total_output_tokens");
+                ModelAnalyticsItem {
+                    provider: r.get("provider"),
+                    model: r.get("model"),
+                    call_count: r.get("call_count"),
+                    total_input_tokens: input,
+                    total_output_tokens: output,
+                    total_cached_tokens: r.get("total_cached_tokens"),
+                    total_reasoning_tokens: r.get("total_reasoning_tokens"),
+                    total_tokens: input + output,
+                    estimated_cost: r.get("estimated_cost"),
+                    currency: r.get("currency"),
+                    has_unpriced: r.get::<Option<bool>, _>("has_unpriced").unwrap_or(false),
+                }
+            })
+            .collect())
+    }
+
+    pub async fn get_agents(
+        &self,
+        filters: &AnalyticsFilters,
+    ) -> Result<Vec<AgentAnalyticsItem>, DatabaseError> {
+        let rows = sqlx::query(
+            r#"
+            SELECT
+                t.agent_id,
+                COALESCE(a.name, 'Unassigned') AS agent_name,
+                COUNT(*)::BIGINT AS trace_count,
+                COUNT(*) FILTER (WHERE t.status = 'error')::BIGINT AS error_count,
+                COALESCE(SUM(t.total_input_tokens + t.total_output_tokens), 0)::BIGINT AS total_tokens,
+                SUM(t.estimated_cost) AS estimated_cost,
+                percentile_cont(0.50) WITHIN GROUP (ORDER BY t.duration_ms)::FLOAT8 AS p50_duration_ms,
+                percentile_cont(0.95) WITHIN GROUP (ORDER BY t.duration_ms)::FLOAT8 AS p95_duration_ms
+            FROM traces t
+            LEFT JOIN agents a ON a.id = t.agent_id AND a.project_id = t.project_id
+            WHERE t.project_id = $1
+              AND ($2::UUID IS NULL OR t.environment_id = $2)
+              AND ($3::TIMESTAMPTZ IS NULL OR t.started_at >= $3)
+              AND ($4::TIMESTAMPTZ IS NULL OR t.started_at <= $4)
+            GROUP BY t.agent_id, a.name
+            ORDER BY trace_count DESC
+            "#,
+        )
+        .bind(filters.project_id)
+        .bind(filters.environment_id)
+        .bind(filters.from)
+        .bind(filters.to)
+        .fetch_all(self.pool)
+        .await?;
+
+        Ok(rows
+            .into_iter()
+            .map(|r| {
+                let trace_count: i64 = r.get("trace_count");
+                let error_count: i64 = r.get("error_count");
+                let error_rate = if trace_count > 0 {
+                    error_count as f64 / trace_count as f64
+                } else {
+                    0.0
+                };
+                AgentAnalyticsItem {
+                    agent_id: r.get("agent_id"),
+                    agent_name: r.get("agent_name"),
+                    trace_count,
+                    error_count,
+                    error_rate,
+                    total_tokens: r.get("total_tokens"),
+                    estimated_cost: r.get("estimated_cost"),
+                    p50_duration_ms: r.get("p50_duration_ms"),
+                    p95_duration_ms: r.get("p95_duration_ms"),
+                }
+            })
+            .collect())
+    }
+
+    pub async fn get_tools(
+        &self,
+        filters: &AnalyticsFilters,
+    ) -> Result<Vec<ToolAnalyticsItem>, DatabaseError> {
+        let rows = sqlx::query(
+            r#"
+            SELECT
+                name AS tool_name,
+                COUNT(*)::BIGINT AS call_count,
+                COUNT(*) FILTER (WHERE status = 'error')::BIGINT AS error_count,
+                percentile_cont(0.50) WITHIN GROUP (ORDER BY duration_ms)::FLOAT8 AS p50_duration_ms,
+                percentile_cont(0.95) WITHIN GROUP (ORDER BY duration_ms)::FLOAT8 AS p95_duration_ms,
+                percentile_cont(0.99) WITHIN GROUP (ORDER BY duration_ms)::FLOAT8 AS p99_duration_ms
+            FROM spans
+            WHERE project_id = $1
+              AND span_type = 'tool'
+              AND ($2::TIMESTAMPTZ IS NULL OR started_at >= $2)
+              AND ($3::TIMESTAMPTZ IS NULL OR started_at <= $3)
+            GROUP BY name
+            ORDER BY call_count DESC
+            "#,
+        )
+        .bind(filters.project_id)
+        .bind(filters.from)
+        .bind(filters.to)
+        .fetch_all(self.pool)
+        .await?;
+
+        Ok(rows
+            .into_iter()
+            .map(|r| {
+                let call_count: i64 = r.get("call_count");
+                let error_count: i64 = r.get("error_count");
+                let error_rate = if call_count > 0 {
+                    error_count as f64 / call_count as f64
+                } else {
+                    0.0
+                };
+                ToolAnalyticsItem {
+                    tool_name: r.get("tool_name"),
+                    call_count,
+                    error_count,
+                    error_rate,
+                    p50_duration_ms: r.get("p50_duration_ms"),
+                    p95_duration_ms: r.get("p95_duration_ms"),
+                    p99_duration_ms: r.get("p99_duration_ms"),
+                }
+            })
+            .collect())
+    }
+
+    pub async fn get_latency(
+        &self,
+        filters: &AnalyticsFilters,
+    ) -> Result<LatencyAnalyticsResult, DatabaseError> {
+        let row = sqlx::query(
+            r#"
+            SELECT
+                percentile_cont(0.50) WITHIN GROUP (ORDER BY duration_ms)::FLOAT8 AS p50_duration_ms,
+                percentile_cont(0.95) WITHIN GROUP (ORDER BY duration_ms)::FLOAT8 AS p95_duration_ms,
+                percentile_cont(0.99) WITHIN GROUP (ORDER BY duration_ms)::FLOAT8 AS p99_duration_ms,
+                MIN(duration_ms)::FLOAT8 AS min_duration_ms,
+                MAX(duration_ms)::FLOAT8 AS max_duration_ms,
+                AVG(duration_ms)::FLOAT8 AS avg_duration_ms,
+                COUNT(*)::BIGINT AS total_count
+            FROM traces
+            WHERE project_id = $1
+              AND ($2::UUID IS NULL OR environment_id = $2)
+              AND ($3::TIMESTAMPTZ IS NULL OR started_at >= $3)
+              AND ($4::TIMESTAMPTZ IS NULL OR started_at <= $4)
+              AND duration_ms IS NOT NULL
+            "#,
+        )
+        .bind(filters.project_id)
+        .bind(filters.environment_id)
+        .bind(filters.from)
+        .bind(filters.to)
+        .fetch_one(self.pool)
+        .await?;
+
+        Ok(LatencyAnalyticsResult {
+            p50_duration_ms: row.get("p50_duration_ms"),
+            p95_duration_ms: row.get("p95_duration_ms"),
+            p99_duration_ms: row.get("p99_duration_ms"),
+            min_duration_ms: row.get("min_duration_ms"),
+            max_duration_ms: row.get("max_duration_ms"),
+            avg_duration_ms: row.get("avg_duration_ms"),
+            total_count: row.get("total_count"),
+        })
+    }
+
+    pub async fn get_errors(
+        &self,
+        filters: &AnalyticsFilters,
+    ) -> Result<ErrorAnalyticsResult, DatabaseError> {
+        let overview_row = sqlx::query(
+            r#"
+            SELECT
+                COUNT(*)::BIGINT AS total_traces,
+                COUNT(*) FILTER (WHERE status = 'error')::BIGINT AS total_errors
+            FROM traces
+            WHERE project_id = $1
+              AND ($2::UUID IS NULL OR environment_id = $2)
+              AND ($3::TIMESTAMPTZ IS NULL OR started_at >= $3)
+              AND ($4::TIMESTAMPTZ IS NULL OR started_at <= $4)
+            "#,
+        )
+        .bind(filters.project_id)
+        .bind(filters.environment_id)
+        .bind(filters.from)
+        .bind(filters.to)
+        .fetch_one(self.pool)
+        .await?;
+
+        let total_traces: i64 = overview_row.get("total_traces");
+        let total_errors: i64 = overview_row.get("total_errors");
+        let error_rate = if total_traces > 0 {
+            total_errors as f64 / total_traces as f64
+        } else {
+            0.0
+        };
+
+        let time_series_rows = sqlx::query(
+            r#"
+            SELECT
+                date_trunc('day', started_at) AS bucket_time,
+                COUNT(*) FILTER (WHERE status = 'error')::BIGINT AS error_count,
+                COUNT(*)::BIGINT AS total_count
+            FROM traces
+            WHERE project_id = $1
+              AND ($2::UUID IS NULL OR environment_id = $2)
+              AND ($3::TIMESTAMPTZ IS NULL OR started_at >= $3)
+              AND ($4::TIMESTAMPTZ IS NULL OR started_at <= $4)
+            GROUP BY bucket_time
+            ORDER BY bucket_time ASC
+            "#,
+        )
+        .bind(filters.project_id)
+        .bind(filters.environment_id)
+        .bind(filters.from)
+        .bind(filters.to)
+        .fetch_all(self.pool)
+        .await?;
+
+        let time_series = time_series_rows
+            .into_iter()
+            .map(|r| {
+                let timestamp: DateTime<Utc> = r.get("bucket_time");
+                let errs: i64 = r.get("error_count");
+                let totals: i64 = r.get("total_count");
+                let rate = if totals > 0 {
+                    errs as f64 / totals as f64
+                } else {
+                    0.0
+                };
+                ErrorTimePoint {
+                    timestamp,
+                    error_count: errs,
+                    total_count: totals,
+                    error_rate: rate,
+                }
+            })
+            .collect();
+
+        let top_errors_rows = sqlx::query(
+            r#"
+            SELECT
+                COALESCE(NULLIF(status_message, ''), 'UnknownError') AS error_type,
+                COUNT(*)::BIGINT AS error_count,
+                MAX(status_message) AS sample_message,
+                MAX(started_at) AS last_seen_at
+            FROM spans
+            WHERE project_id = $1
+              AND status = 'error'
+              AND ($2::TIMESTAMPTZ IS NULL OR started_at >= $2)
+              AND ($3::TIMESTAMPTZ IS NULL OR started_at <= $3)
+            GROUP BY error_type
+            ORDER BY error_count DESC
+            LIMIT 10
+            "#,
+        )
+        .bind(filters.project_id)
+        .bind(filters.from)
+        .bind(filters.to)
+        .fetch_all(self.pool)
+        .await?;
+
+        let top_errors = top_errors_rows
+            .into_iter()
+            .map(|r| TopErrorItem {
+                error_type: r.get("error_type"),
+                count: r.get("error_count"),
+                sample_message: r.get("sample_message"),
+                last_seen_at: r.get("last_seen_at"),
+            })
+            .collect();
+
+        Ok(ErrorAnalyticsResult {
+            total_errors,
+            total_traces,
+            error_rate,
+            time_series,
+            top_errors,
+        })
     }
 }

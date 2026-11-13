@@ -229,3 +229,137 @@ export interface TraceQueryResult {
   next_cursor: string | null;
   has_more: boolean;
 }
+
+export interface AnalyticsOverview {
+  total_cost: string | null;
+  has_unpriced_usage: boolean;
+  total_tokens: number;
+  total_input_tokens: number;
+  total_output_tokens: number;
+  total_cached_tokens: number;
+  total_reasoning_tokens: number;
+  total_traces: number;
+  total_errors: number;
+  error_rate: number;
+  p50_duration_ms: number | null;
+  p95_duration_ms: number | null;
+  p99_duration_ms: number | null;
+}
+
+export interface TokenUsageTimePoint {
+  timestamp: string;
+  input_tokens: number;
+  output_tokens: number;
+  cached_tokens: number;
+  reasoning_tokens: number;
+  total_tokens: number;
+}
+
+export interface TokenAnalyticsResult {
+  time_series: TokenUsageTimePoint[];
+  total_input_tokens: number;
+  total_output_tokens: number;
+  total_cached_tokens: number;
+  total_reasoning_tokens: number;
+  total_tokens: number;
+}
+
+export interface CostTimePoint {
+  date: string;
+  cost: string | null;
+  currency: string;
+  unpriced_traces_count: number;
+}
+
+export interface CostAnalyticsResult {
+  time_series: CostTimePoint[];
+  total_estimated_cost: string | null;
+  currency: string;
+  unpriced_usage_count: number;
+  has_unpriced_usage: boolean;
+}
+
+export interface ModelAnalyticsItem {
+  provider: string;
+  model: string;
+  call_count: number;
+  total_input_tokens: number;
+  total_output_tokens: number;
+  total_cached_tokens: number;
+  total_reasoning_tokens: number;
+  total_tokens: number;
+  estimated_cost: string | null;
+  currency: string;
+  has_unpriced: boolean;
+}
+
+export interface AgentAnalyticsItem {
+  agent_id: string | null;
+  agent_name: string;
+  trace_count: number;
+  error_count: number;
+  error_rate: number;
+  total_tokens: number;
+  estimated_cost: string | null;
+  p50_duration_ms: number | null;
+  p95_duration_ms: number | null;
+}
+
+export interface ToolAnalyticsItem {
+  tool_name: string;
+  call_count: number;
+  error_count: number;
+  error_rate: number;
+  p50_duration_ms: number | null;
+  p95_duration_ms: number | null;
+  p99_duration_ms: number | null;
+}
+
+export interface LatencyAnalyticsResult {
+  p50_duration_ms: number | null;
+  p95_duration_ms: number | null;
+  p99_duration_ms: number | null;
+  min_duration_ms: number | null;
+  max_duration_ms: number | null;
+  avg_duration_ms: number | null;
+  total_count: number;
+}
+
+export interface ErrorTimePoint {
+  timestamp: string;
+  error_count: number;
+  total_count: number;
+  error_rate: number;
+}
+
+export interface TopErrorItem {
+  error_type: string;
+  count: number;
+  sample_message: string | null;
+  last_seen_at: string;
+}
+
+export interface ErrorAnalyticsResult {
+  total_errors: number;
+  total_traces: number;
+  error_rate: number;
+  time_series: ErrorTimePoint[];
+  top_errors: TopErrorItem[];
+}
+
+export interface ModelPricing {
+  id: string;
+  provider: string;
+  model_pattern: string;
+  match_type: string;
+  currency: string;
+  input_per_million: string | null;
+  output_per_million: string | null;
+  cached_input_per_million: string | null;
+  effective_from: string;
+  effective_until: string | null;
+  source_url: string | null;
+  source_checked_at: string | null;
+  version: string;
+  created_at: string;
+}

@@ -680,3 +680,206 @@ paths:
       responses:
         '200':
           description: List of session traces
+
+  /api/v1/analytics/overview:
+    get:
+      summary: Get aggregated project overview analytics
+      parameters:
+        - name: project_id
+          in: query
+          required: true
+          schema: { type: string, format: uuid }
+        - name: environment_id
+          in: query
+          required: false
+          schema: { type: string, format: uuid }
+        - name: from
+          in: query
+          required: false
+          schema: { type: string, format: date-time }
+        - name: to
+          in: query
+          required: false
+          schema: { type: string, format: date-time }
+      responses:
+        '200':
+          description: Overview analytics summary
+
+  /api/v1/analytics/tokens:
+    get:
+      summary: Get token usage time-series and breakdown
+      parameters:
+        - name: project_id
+          in: query
+          required: true
+          schema: { type: string, format: uuid }
+        - name: environment_id
+          in: query
+          required: false
+          schema: { type: string, format: uuid }
+        - name: from
+          in: query
+          required: false
+          schema: { type: string, format: date-time }
+        - name: to
+          in: query
+          required: false
+          schema: { type: string, format: date-time }
+      responses:
+        '200':
+          description: Token analytics result
+
+  /api/v1/analytics/costs:
+    get:
+      summary: Get cost time-series and unpriced usage counts
+      parameters:
+        - name: project_id
+          in: query
+          required: true
+          schema: { type: string, format: uuid }
+        - name: environment_id
+          in: query
+          required: false
+          schema: { type: string, format: uuid }
+        - name: from
+          in: query
+          required: false
+          schema: { type: string, format: date-time }
+        - name: to
+          in: query
+          required: false
+          schema: { type: string, format: date-time }
+      responses:
+        '200':
+          description: Cost analytics result
+
+  /api/v1/analytics/models:
+    get:
+      summary: Get model-level token usage and estimated cost breakdown
+      parameters:
+        - name: project_id
+          in: query
+          required: true
+          schema: { type: string, format: uuid }
+        - name: from
+          in: query
+          required: false
+          schema: { type: string, format: date-time }
+        - name: to
+          in: query
+          required: false
+          schema: { type: string, format: date-time }
+      responses:
+        '200':
+          description: List of model usage items
+
+  /api/v1/analytics/agents:
+    get:
+      summary: Get agent-level usage, errors, and latency percentiles
+      parameters:
+        - name: project_id
+          in: query
+          required: true
+          schema: { type: string, format: uuid }
+        - name: environment_id
+          in: query
+          required: false
+          schema: { type: string, format: uuid }
+        - name: from
+          in: query
+          required: false
+          schema: { type: string, format: date-time }
+        - name: to
+          in: query
+          required: false
+          schema: { type: string, format: date-time }
+      responses:
+        '200':
+          description: List of agent analytics items
+
+  /api/v1/analytics/tools:
+    get:
+      summary: Get tool performance and latency percentiles
+      parameters:
+        - name: project_id
+          in: query
+          required: true
+          schema: { type: string, format: uuid }
+        - name: from
+          in: query
+          required: false
+          schema: { type: string, format: date-time }
+        - name: to
+          in: query
+          required: false
+          schema: { type: string, format: date-time }
+      responses:
+        '200':
+          description: List of tool performance items
+
+  /api/v1/analytics/latency:
+    get:
+      summary: Get continuous latency percentiles (P50, P95, P99)
+      parameters:
+        - name: project_id
+          in: query
+          required: true
+          schema: { type: string, format: uuid }
+        - name: environment_id
+          in: query
+          required: false
+          schema: { type: string, format: uuid }
+        - name: from
+          in: query
+          required: false
+          schema: { type: string, format: date-time }
+        - name: to
+          in: query
+          required: false
+          schema: { type: string, format: date-time }
+      responses:
+        '200':
+          description: Continuous latency percentiles
+
+  /api/v1/analytics/errors:
+    get:
+      summary: Get error breakdown, rate time-series, and top errors
+      parameters:
+        - name: project_id
+          in: query
+          required: true
+          schema: { type: string, format: uuid }
+        - name: environment_id
+          in: query
+          required: false
+          schema: { type: string, format: uuid }
+        - name: from
+          in: query
+          required: false
+          schema: { type: string, format: date-time }
+        - name: to
+          in: query
+          required: false
+          schema: { type: string, format: date-time }
+      responses:
+        '200':
+          description: Error analytics summary and time-series
+
+  /api/v1/pricing:
+    get:
+      summary: List all versioned model pricing rate cards
+      responses:
+        '200':
+          description: List of pricing rate cards
+    post:
+      summary: Create a custom model pricing rate card
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [provider, model_pattern, match_type, effective_from, version]
+      responses:
+        '201':
+          description: Created pricing rate card
