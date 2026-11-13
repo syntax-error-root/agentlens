@@ -4,7 +4,9 @@
 
 use crate::AppState;
 use agentlens_auth::SessionPayload;
-use agentlens_database::{AgentsRepository, OrganizationMembersRepository, ProjectsRepository};
+use agentlens_database::{
+    AgentHealthRepository, AgentsRepository, OrganizationMembersRepository, ProjectsRepository,
+};
 use agentlens_organizations::require_admin_or_owner;
 use axum::{
     extract::{Extension, Path, Query, State},
@@ -457,6 +459,77 @@ pub async fn list_agent_traces_handler(
         Err(e) => (
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(json!({ "error": format!("Failed to list agent traces: {e}") })),
+        )
+            .into_response(),
+    }
+}
+
+#[derive(Debug, Deserialize)]
+pub struct AgentHealthQuery {
+    pub window: Option<String>,
+}
+
+pub async fn get_agent_health_handler(
+    State(state): State<Arc<AppState>>,
+    Extension(session): Extension<SessionPayload>,
+    Path(agent_id): Path<Uuid>,
+    Query(query): Query<AgentHealthQuery>,
+) -> Response {
+    let pool = match &state.db {
+        Some(p) => p,
+        None => {
+            return (
+                StatusCode::SERVICE_UNAVAILABLE,
+                Json(json!({ "error": "Database unavailable" })),
+            )
+                .into_response();
+        }
+    };
+
+    let agent_repo = AgentsRepository::new(pool);
+    let agent = match agent_repo.get_by_id_global(agent_id).await {
+        Ok(Some(a)) => a,
+        Ok(None) => {
+            return (
+                StatusCode::NOT_FOUND,
+                Json(json!({ "error": format!("Agent {agent_id} not found") })),
+            )
+                .into_response();
+        }
+        Err(e) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({ "error": format!("Database error: {e}") })),
+            )
+                .into_response();
+        }
+    };
+
+    let member_repo = OrganizationMembersRepository::new(pool);
+    if member_repo
+        .get_role(agent.organization_id, session.user_id)
+        .await
+        .ok()
+        .flatten()
+        .is_none()
+    {
+        return (
+            StatusCode::FORBIDDEN,
+            Json(json!({ "error": "Access denied to agent organization" })),
+        )
+            .into_response();
+    }
+
+    let window = query.window.as_deref().unwrap_or("24h");
+    let health_repo = AgentHealthRepository::new(pool);
+    match health_repo
+        .compute_health(agent.project_id, agent.id, window)
+        .await
+    {
+        Ok(report) => Json(report).into_response(),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({ "error": format!("Failed to compute agent health: {e}") })),
         )
             .into_response(),
     }

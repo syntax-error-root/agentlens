@@ -784,6 +784,326 @@ pub struct ErrorAnalyticsResult {
     pub top_errors: Vec<TopErrorItem>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AgentHealthStatus {
+    Active,
+    Idle,
+    Stale,
+    NeverSeen,
+    Unknown,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AgentHealthReport {
+    pub agent_id: Uuid,
+    pub window: String,
+    pub last_seen_at: Option<DateTime<Utc>>,
+    pub freshness_status: AgentHealthStatus,
+    pub execution_count: i64,
+    pub success_rate: f64,
+    pub error_rate: f64,
+    pub timeout_rate: f64,
+    pub p50_latency_ms: Option<f64>,
+    pub p95_latency_ms: Option<f64>,
+    pub status_explanation: String,
+    pub evaluated_thresholds: serde_json::Value,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AlertMetric {
+    AgentErrorRate,
+    AgentP95LatencyMs,
+    AgentInactivitySeconds,
+    LlmErrorRate,
+    ToolFailureRate,
+    TokenUsageTotal,
+    EstimatedCostUsd,
+}
+
+impl AlertMetric {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::AgentErrorRate => "agent_error_rate",
+            Self::AgentP95LatencyMs => "agent_p95_latency_ms",
+            Self::AgentInactivitySeconds => "agent_inactivity_seconds",
+            Self::LlmErrorRate => "llm_error_rate",
+            Self::ToolFailureRate => "tool_failure_rate",
+            Self::TokenUsageTotal => "token_usage_total",
+            Self::EstimatedCostUsd => "estimated_cost_usd",
+        }
+    }
+}
+
+impl std::str::FromStr for AlertMetric {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "agent_error_rate" => Ok(Self::AgentErrorRate),
+            "agent_p95_latency_ms" => Ok(Self::AgentP95LatencyMs),
+            "agent_inactivity_seconds" => Ok(Self::AgentInactivitySeconds),
+            "llm_error_rate" => Ok(Self::LlmErrorRate),
+            "tool_failure_rate" => Ok(Self::ToolFailureRate),
+            "token_usage_total" => Ok(Self::TokenUsageTotal),
+            "estimated_cost_usd" => Ok(Self::EstimatedCostUsd),
+            _ => Err(format!("Unknown alert metric: {s}")),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AlertOperator {
+    Gt,
+    Gte,
+    Lt,
+    Lte,
+    Eq,
+}
+
+impl AlertOperator {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Gt => "gt",
+            Self::Gte => "gte",
+            Self::Lt => "lt",
+            Self::Lte => "lte",
+            Self::Eq => "eq",
+        }
+    }
+
+    pub fn evaluates(
+        &self,
+        value: rust_decimal::Decimal,
+        threshold: rust_decimal::Decimal,
+    ) -> bool {
+        match self {
+            Self::Gt => value > threshold,
+            Self::Gte => value >= threshold,
+            Self::Lt => value < threshold,
+            Self::Lte => value <= threshold,
+            Self::Eq => value == threshold,
+        }
+    }
+}
+
+impl std::str::FromStr for AlertOperator {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "gt" => Ok(Self::Gt),
+            "gte" => Ok(Self::Gte),
+            "lt" => Ok(Self::Lt),
+            "lte" => Ok(Self::Lte),
+            "eq" => Ok(Self::Eq),
+            _ => Err(format!("Unknown alert operator: {s}")),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AlertSeverity {
+    Info,
+    Warning,
+    Critical,
+}
+
+impl AlertSeverity {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Info => "info",
+            Self::Warning => "warning",
+            Self::Critical => "critical",
+        }
+    }
+}
+
+impl std::str::FromStr for AlertSeverity {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "info" => Ok(Self::Info),
+            "warning" => Ok(Self::Warning),
+            "critical" => Ok(Self::Critical),
+            _ => Err(format!("Unknown alert severity: {s}")),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AlertEventStatus {
+    Firing,
+    Acknowledged,
+    Resolved,
+}
+
+impl AlertEventStatus {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Firing => "firing",
+            Self::Acknowledged => "acknowledged",
+            Self::Resolved => "resolved",
+        }
+    }
+}
+
+impl std::str::FromStr for AlertEventStatus {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "firing" => Ok(Self::Firing),
+            "acknowledged" => Ok(Self::Acknowledged),
+            "resolved" => Ok(Self::Resolved),
+            _ => Err(format!("Unknown alert event status: {s}")),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AlertRule {
+    pub id: Uuid,
+    pub organization_id: Uuid,
+    pub project_id: Uuid,
+    pub environment_id: Option<Uuid>,
+    pub name: String,
+    pub description: Option<String>,
+    pub enabled: bool,
+    pub metric: AlertMetric,
+    pub operator: AlertOperator,
+    pub threshold: rust_decimal::Decimal,
+    pub window_seconds: i32,
+    pub min_sample_count: i32,
+    pub group_by: serde_json::Value,
+    pub filters: serde_json::Value,
+    pub cooldown_seconds: i32,
+    pub severity: AlertSeverity,
+    pub created_by: Option<Uuid>,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AlertEvent {
+    pub id: Uuid,
+    pub organization_id: Uuid,
+    pub project_id: Uuid,
+    pub rule_id: Uuid,
+    pub fingerprint: String,
+    pub status: AlertEventStatus,
+    pub severity: AlertSeverity,
+    pub summary: String,
+    pub details: serde_json::Value,
+    pub first_triggered_at: DateTime<Utc>,
+    pub last_triggered_at: DateTime<Utc>,
+    pub resolved_at: Option<DateTime<Utc>>,
+    pub acknowledged_at: Option<DateTime<Utc>>,
+    pub acknowledged_by: Option<Uuid>,
+    pub created_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum NotificationChannelType {
+    Webhook,
+    Telegram,
+    Discord,
+    Slack,
+    Email,
+}
+
+impl NotificationChannelType {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Webhook => "webhook",
+            Self::Telegram => "telegram",
+            Self::Discord => "discord",
+            Self::Slack => "slack",
+            Self::Email => "email",
+        }
+    }
+}
+
+impl std::str::FromStr for NotificationChannelType {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "webhook" => Ok(Self::Webhook),
+            "telegram" => Ok(Self::Telegram),
+            "discord" => Ok(Self::Discord),
+            "slack" => Ok(Self::Slack),
+            "email" => Ok(Self::Email),
+            _ => Err(format!("Unknown notification channel type: {s}")),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct NotificationChannel {
+    pub id: Uuid,
+    pub organization_id: Uuid,
+    pub project_id: Option<Uuid>,
+    pub channel_type: NotificationChannelType,
+    pub name: String,
+    pub encrypted_config: String,
+    pub key_version: String,
+    pub enabled: bool,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum NotificationDeliveryStatus {
+    Pending,
+    Delivered,
+    Failed,
+}
+
+impl NotificationDeliveryStatus {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Pending => "pending",
+            Self::Delivered => "delivered",
+            Self::Failed => "failed",
+        }
+    }
+}
+
+impl std::str::FromStr for NotificationDeliveryStatus {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "pending" => Ok(Self::Pending),
+            "delivered" => Ok(Self::Delivered),
+            "failed" => Ok(Self::Failed),
+            _ => Err(format!("Unknown notification delivery status: {s}")),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct NotificationDelivery {
+    pub id: Uuid,
+    pub alert_event_id: Uuid,
+    pub channel_id: Uuid,
+    pub status: NotificationDeliveryStatus,
+    pub attempts: i32,
+    pub next_attempt_at: DateTime<Utc>,
+    pub last_error: Option<String>,
+    pub provider_message_id: Option<String>,
+    pub created_at: DateTime<Utc>,
+    pub delivered_at: Option<DateTime<Utc>>,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

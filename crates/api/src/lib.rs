@@ -4,6 +4,7 @@
 //! HTTP routing, middleware, health endpoints, and control-plane API handlers.
 
 pub mod agents;
+pub mod alerts;
 pub mod analytics;
 pub mod auth;
 pub mod middleware;
@@ -109,6 +110,10 @@ pub fn create_router(state: AppState) -> Router {
             "/api/v1/agents/{agent_id}/traces",
             get(agents::list_agent_traces_handler),
         )
+        .route(
+            "/api/v1/agents/{agent_id}/health",
+            get(agents::get_agent_health_handler),
+        )
         // Traces and Spans
         .route("/api/v1/traces", get(traces::list_traces_handler))
         .route(
@@ -164,6 +169,45 @@ pub fn create_router(state: AppState) -> Router {
         .route(
             "/api/v1/pricing",
             get(analytics::list_pricing_handler).post(analytics::create_pricing_handler),
+        )
+        // Alert Rules
+        .route(
+            "/api/v1/projects/{project_id}/alert-rules",
+            get(alerts::list_alert_rules_handler).post(alerts::create_alert_rule_handler),
+        )
+        .route(
+            "/api/v1/alert-rules/{rule_id}",
+            get(alerts::get_alert_rule_handler)
+                .patch(alerts::update_alert_rule_handler)
+                .delete(alerts::delete_alert_rule_handler),
+        )
+        // Alert Events
+        .route(
+            "/api/v1/projects/{project_id}/alert-events",
+            get(alerts::list_alert_events_handler),
+        )
+        .route(
+            "/api/v1/alert-events/{event_id}",
+            get(alerts::get_alert_event_handler),
+        )
+        .route(
+            "/api/v1/alert-events/{event_id}/acknowledge",
+            post(alerts::acknowledge_alert_event_handler),
+        )
+        // Notification Channels
+        .route(
+            "/api/v1/projects/{project_id}/notification-channels",
+            get(alerts::list_notification_channels_handler)
+                .post(alerts::create_notification_channel_handler),
+        )
+        .route(
+            "/api/v1/notification-channels/{channel_id}",
+            get(alerts::get_notification_channel_handler)
+                .delete(alerts::delete_notification_channel_handler),
+        )
+        .route(
+            "/api/v1/notification-channels/{channel_id}/test",
+            post(alerts::test_notification_channel_handler),
         )
         .layer(from_fn_with_state(
             state_arc.clone(),

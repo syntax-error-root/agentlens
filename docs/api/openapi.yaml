@@ -883,3 +883,191 @@ paths:
       responses:
         '201':
           description: Created pricing rate card
+
+  /api/v1/agents/{agent_id}/health:
+    get:
+      summary: Get transparent agent health indicators over a time window
+      parameters:
+        - name: agent_id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+        - name: window
+          in: query
+          required: false
+          schema: { type: string, enum: [1h, 24h, 7d], default: 24h }
+      responses:
+        '200':
+          description: Transparent agent health report
+
+  /api/v1/projects/{project_id}/alert-rules:
+    get:
+      summary: List all alert rules for a project
+      parameters:
+        - name: project_id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        '200':
+          description: List of alert rules
+    post:
+      summary: Create an alert rule for a project
+      parameters:
+        - name: project_id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name, metric, operator, threshold, window_seconds]
+      responses:
+        '201':
+          description: Created alert rule
+
+  /api/v1/alert-rules/{rule_id}:
+    get:
+      summary: Get an alert rule by ID
+      parameters:
+        - name: rule_id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        '200':
+          description: Alert rule details
+    patch:
+      summary: Update an alert rule
+      parameters:
+        - name: rule_id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        '200':
+          description: Updated alert rule
+    delete:
+      summary: Delete an alert rule
+      parameters:
+        - name: rule_id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        '204':
+          description: Alert rule deleted
+
+  /api/v1/projects/{project_id}/alert-events:
+    get:
+      summary: List alert events history for a project
+      parameters:
+        - name: project_id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+        - name: status
+          in: query
+          required: false
+          schema: { type: string, enum: [firing, acknowledged, resolved] }
+        - name: limit
+          in: query
+          required: false
+          schema: { type: integer, default: 50 }
+        - name: offset
+          in: query
+          required: false
+          schema: { type: integer, default: 0 }
+      responses:
+        '200':
+          description: List of alert events
+
+  /api/v1/alert-events/{event_id}:
+    get:
+      summary: Get alert event by ID
+      parameters:
+        - name: event_id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        '200':
+          description: Alert event details
+
+  /api/v1/alert-events/{event_id}/acknowledge:
+    post:
+      summary: Acknowledge an active firing alert event
+      parameters:
+        - name: event_id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        '200':
+          description: Acknowledged alert event
+
+  /api/v1/projects/{project_id}/notification-channels:
+    get:
+      summary: List notification channels with masked secrets for a project
+      parameters:
+        - name: project_id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        '200':
+          description: List of notification channels
+    post:
+      summary: Create an encrypted notification channel for a project
+      parameters:
+        - name: project_id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [channel_type, name, config]
+      responses:
+        '201':
+          description: Created notification channel
+
+  /api/v1/notification-channels/{channel_id}:
+    get:
+      summary: Get notification channel details with masked credentials
+      parameters:
+        - name: channel_id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        '200':
+          description: Notification channel
+    delete:
+      summary: Delete notification channel
+      parameters:
+        - name: channel_id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        '204':
+          description: Notification channel deleted
+
+  /api/v1/notification-channels/{channel_id}/test:
+    post:
+      summary: Dispatch a test notification with SSRF defense verification
+      parameters:
+        - name: channel_id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        '200':
+          description: Test notification dispatched successfully

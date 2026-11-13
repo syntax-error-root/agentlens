@@ -363,3 +363,69 @@ export interface ModelPricing {
   version: string;
   created_at: string;
 }
+
+export type AgentHealthStatus = "active" | "idle" | "stale" | "never_seen" | "unknown";
+
+export interface AgentHealthReport {
+  agent_id: string;
+  window: string;
+  last_seen_at: string | null;
+  freshness_status: AgentHealthStatus;
+  execution_count: number;
+  success_rate: number;
+  error_rate: number;
+  timeout_rate: number;
+  p50_latency_ms: number | null;
+  p95_latency_ms: number | null;
+  status_explanation: string;
+  evaluated_thresholds: Record<string, unknown>;
+}
+
+export interface AlertRule {
+  id: string;
+  organization_id: string;
+  project_id: string;
+  environment_id: string | null;
+  name: string;
+  description: string | null;
+  enabled: boolean;
+  metric: string;
+  operator: string;
+  threshold: string;
+  window_seconds: number;
+  min_sample_count: number;
+  cooldown_seconds: number;
+  severity: "info" | "warning" | "critical";
+  created_at: string;
+  updated_at: string;
+}
+
+export interface AlertEvent {
+  id: string;
+  organization_id: string;
+  project_id: string;
+  rule_id: string;
+  fingerprint: string;
+  status: "firing" | "acknowledged" | "resolved";
+  severity: "info" | "warning" | "critical";
+  summary: string;
+  details: Record<string, unknown>;
+  first_triggered_at: string;
+  last_triggered_at: string;
+  resolved_at: string | null;
+  acknowledged_at: string | null;
+  acknowledged_by: string | null;
+  created_at: string;
+}
+
+export interface NotificationChannel {
+  id: string;
+  organization_id: string;
+  project_id: string | null;
+  channel_type: "webhook" | "telegram" | "discord" | "slack" | "email";
+  name: string;
+  config: Record<string, unknown>;
+  enabled: boolean;
+  created_at: string;
+  updated_at: string;
+}
