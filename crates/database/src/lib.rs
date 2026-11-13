@@ -72,7 +72,6 @@ impl<'a> OrganizationsRepository<'a> {
         Self { pool }
     }
 
-    #[allow(clippy::too_many_arguments)]
     pub async fn create(&self, name: &str, slug: &str) -> Result<Organization, DatabaseError> {
         let row = sqlx::query(
             r#"
@@ -219,7 +218,6 @@ impl<'a> UsersRepository<'a> {
         Ok(row)
     }
 
-    #[allow(clippy::too_many_arguments)]
     pub async fn create(
         &self,
         email: &str,
@@ -463,7 +461,6 @@ impl<'a> ProjectsRepository<'a> {
     }
 
     /// Creates a project and automatically initializes production, staging, and development environments in one tx.
-    #[allow(clippy::too_many_arguments)]
     pub async fn create(
         &self,
         org_id: Uuid,
@@ -720,7 +717,6 @@ impl<'a> ApiKeysRepository<'a> {
         Self { pool }
     }
 
-    #[allow(clippy::too_many_arguments)]
     #[allow(clippy::too_many_arguments)]
     pub async fn create(
         &self,
