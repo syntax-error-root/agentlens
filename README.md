@@ -12,6 +12,12 @@
 
 *Open-source, self-hosted, Rust-first AI agent observability platform.*
 
+<br/>
+
+<p align="center">
+  <img src="docs/images/dashboard-preview.png" alt="AgentLens Observability Console" width="100%" />
+</p>
+
 </div>
 
 ---
