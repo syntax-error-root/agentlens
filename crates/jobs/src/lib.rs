@@ -6,12 +6,14 @@
 use agentlens_alerts::AlertEngine;
 use agentlens_database::{
     AlertRulesRepository, DailyMetricsRepository, DatabaseError, DbPool, ModelPricingRepository,
-    NotificationDeliveriesRepository, OutboxRepository, TokenUsagesRepository, TracesRepository,
+    NotificationDeliveriesRepository, OutboxRepository, RetentionRepository, TokenUsagesRepository,
+    TracesRepository,
 };
 use agentlens_domain::{OutboxJob, TraceId, TraceStatus};
 use agentlens_notifications::{deliver_notification, NotificationPayload};
 use agentlens_observability::ObservabilityRegistry;
 use agentlens_pricing::ModelPricingEngine;
+use agentlens_storage::StorageClient;
 use chrono::Utc;
 use rand::Rng;
 use serde::{Deserialize, Serialize};
@@ -25,6 +27,8 @@ use uuid::Uuid;
 pub enum JobError {
     #[error("Database error: {0}")]
     Database(#[from] DatabaseError),
+    #[error("Storage error: {0}")]
+    Storage(#[from] agentlens_storage::StorageError),
     #[error("JSON error: {0}")]
     Json(#[from] serde_json::Error),
     #[error("Invalid job payload: {0}")]
@@ -66,6 +70,15 @@ pub struct TraceIngestedPayload {
     pub trace_id: String,
 }
 
+/// Payload format for `retention_cleanup` outbox jobs.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct RetentionCleanupPayload {
+    #[serde(default)]
+    pub batch_size: Option<i64>,
+    #[serde(default)]
+    pub dry_run: Option<bool>,
+}
+
 /// Computes backoff duration using exponential curve with jitter bounded to 300s:
 /// backoff_seconds = min(300, 2^attempts) + jitter
 #[must_use]
@@ -83,6 +96,7 @@ pub struct OutboxWorker {
     pool: DbPool,
     registry: Arc<ObservabilityRegistry>,
     config: WorkerConfig,
+    storage: Option<Arc<dyn StorageClient>>,
 }
 
 impl OutboxWorker {
@@ -92,6 +106,22 @@ impl OutboxWorker {
             pool,
             registry,
             config,
+            storage: None,
+        }
+    }
+
+    #[must_use]
+    pub fn with_storage(
+        pool: DbPool,
+        registry: Arc<ObservabilityRegistry>,
+        config: WorkerConfig,
+        storage: Option<Arc<dyn StorageClient>>,
+    ) -> Self {
+        Self {
+            pool,
+            registry,
+            config,
+            storage,
         }
     }
 
@@ -262,8 +292,66 @@ impl OutboxWorker {
                 Ok(())
             }
             "retention_cleanup" => {
-                // Retention cleanup scaffolding
-                debug!(job_id = %job.id, "Processed retention cleanup job");
+                let payload: RetentionCleanupPayload = if job.payload.is_null() {
+                    RetentionCleanupPayload::default()
+                } else {
+                    serde_json::from_value(job.payload.clone()).unwrap_or_default()
+                };
+
+                let batch_size = payload.batch_size.unwrap_or(500);
+                let dry_run = payload.dry_run.unwrap_or(false);
+
+                let retention_repo = RetentionRepository::new(&self.pool);
+                let expired_candidates = retention_repo.find_expired_traces(batch_size).await?;
+
+                if expired_candidates.is_empty() {
+                    debug!("No expired traces eligible for retention cleanup");
+                    return Ok(());
+                }
+
+                let trace_ids: Vec<String> = expired_candidates
+                    .iter()
+                    .map(|c| c.trace_id.clone())
+                    .collect();
+                let trace_uuids: Vec<Uuid> = expired_candidates.iter().map(|c| c.id).collect();
+
+                let s3_keys = retention_repo.get_s3_keys_for_traces(&trace_ids).await?;
+
+                if dry_run {
+                    info!(
+                        expired_count = trace_uuids.len(),
+                        s3_keys_count = s3_keys.len(),
+                        "Retention cleanup dry-run executed; no records deleted"
+                    );
+                    return Ok(());
+                }
+
+                if let Some(storage) = &self.storage {
+                    if !s3_keys.is_empty() {
+                        match storage.delete_payloads(&s3_keys).await {
+                            Ok(deleted_count) => {
+                                debug!(
+                                    count = deleted_count,
+                                    "Deleted S3 payload objects for expired traces"
+                                );
+                            }
+                            Err(e) => {
+                                warn!(
+                                    err = %e,
+                                    "Encountered error while pruning S3 payloads for expired traces"
+                                );
+                            }
+                        }
+                    }
+                }
+
+                let deleted_rows = retention_repo.delete_traces_by_id(&trace_uuids).await?;
+                info!(
+                    deleted_traces = deleted_rows,
+                    pruned_s3_keys = s3_keys.len(),
+                    "Retention cleanup completed successfully"
+                );
+
                 Ok(())
             }
             unknown => Err(JobError::UnknownJobType(unknown.to_string())),

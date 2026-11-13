@@ -38,8 +38,32 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let (shutdown_tx, shutdown_rx) = watch::channel(false);
 
+    let storage_client: Option<Arc<dyn agentlens_storage::StorageClient>> =
+        if let (Some(endpoint), Some(bucket)) =
+            (&config.storage.s3_endpoint, &config.storage.s3_bucket)
+        {
+            match agentlens_storage::S3StorageClient::new(endpoint, bucket) {
+                Ok(client) => {
+                    info!(
+                        "Worker configured S3/MinIO storage at {} (bucket: {})",
+                        endpoint, bucket
+                    );
+                    Some(Arc::new(client))
+                }
+                Err(err) => {
+                    warn!(
+                    "Failed to configure S3 storage client: {}. Proceeding without object storage.",
+                    err
+                );
+                    None
+                }
+            }
+        } else {
+            None
+        };
+
     if let Some(pool) = db_pool {
-        let worker = OutboxWorker::new(pool, registry, worker_config);
+        let worker = OutboxWorker::with_storage(pool, registry, worker_config, storage_client);
         let worker_task = tokio::spawn(async move {
             worker.run(shutdown_rx).await;
         });
