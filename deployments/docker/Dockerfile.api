@@ -11,9 +11,9 @@ RUN cargo build --release --bin agentlens-api
 FROM alpine:3.20 AS runner
 
 RUN apk add --no-cache ca-certificates tzdata
-RUN addgroup -S agentlens && adduser -S agentlens -G agentlens
+RUN addgroup -g 65532 -S agentlens && adduser -u 65532 -S agentlens -G agentlens
 
-USER agentlens
+USER 65532:65532
 WORKDIR /app
 
 COPY --from=builder /app/target/release/agentlens-api /app/agentlens-api
