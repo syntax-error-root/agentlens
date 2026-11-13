@@ -23,6 +23,15 @@ CONTENT_KEYS: frozenset[str] = frozenset(
         "llm.completions",
         "agentlens.tool.input",
         "agentlens.tool.output",
+        "mcp.tool.arguments",
+        "mcp.tool.result",
+        "mcp.resource.content",
+        "mcp.prompt.result",
+        "langgraph.node.input",
+        "langgraph.node.output",
+        "crewai.task.output",
+        "openai_agents.input",
+        "openai_agents.output",
     }
 )
 
@@ -111,11 +120,29 @@ class AgentLensSpanProcessor(SpanProcessor):
             if not self.capture_content and key_str in CONTENT_KEYS:
                 continue
 
-            # 2. Redact matching keys and secrets
-            if key_lower in self.redacted_keys or any(
-                sensitive in key_lower
-                for sensitive in ("password", "secret", "api_key", "token", "auth")
-            ):
+            # 2. Redact matching keys and secrets (distinguishing credentials from numerical token usage metrics)
+            is_token_usage = key_lower.startswith("gen_ai.usage.") or (
+                isinstance(val, (int, float))
+                and (
+                    key_lower.endswith("_tokens")
+                    or key_lower
+                    in (
+                        "prompt_tokens",
+                        "completion_tokens",
+                        "total_tokens",
+                        "cached_tokens",
+                        "reasoning_tokens",
+                    )
+                )
+            )
+
+            is_sensitive = (
+                key_lower in self.redacted_keys
+                or any(s in key_lower for s in ("password", "secret", "api_key", "auth"))
+                or ("token" in key_lower and not is_token_usage)
+            )
+
+            if is_sensitive:
                 new_attrs[key_str] = "[REDACTED]"
             elif isinstance(val, str):
                 redacted_val = BEARER_PATTERN.sub("Bearer [REDACTED]", val)
