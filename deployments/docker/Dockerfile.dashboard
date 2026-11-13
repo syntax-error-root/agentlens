@@ -18,14 +18,13 @@ RUN corepack enable pnpm && pnpm --filter dashboard build
 FROM base AS runner
 WORKDIR /app
 ENV NODE_ENV=production
-RUN addgroup --system --gid 1001 nodejs
-RUN adduser --system --uid 1001 nextjs
+RUN addgroup -g 65532 -S agentlens && adduser -u 65532 -S agentlens -G agentlens
 
 COPY --from=builder /app/apps/dashboard/public ./apps/dashboard/public
-COPY --from=builder --chown=nextjs:nodejs /app/apps/dashboard/.next/standalone ./
-COPY --from=builder --chown=nextjs:nodejs /app/apps/dashboard/.next/static ./apps/dashboard/.next/static
+COPY --from=builder --chown=65532:65532 /app/apps/dashboard/.next/standalone ./
+COPY --from=builder --chown=65532:65532 /app/apps/dashboard/.next/static ./apps/dashboard/.next/static
 
-USER nextjs
+USER 65532:65532
 EXPOSE 3000
 ENV PORT=3000
 
