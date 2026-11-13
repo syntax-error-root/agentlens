@@ -238,6 +238,7 @@ dependencies = [
  "agentlens-organizations",
  "agentlens-pricing",
  "agentlens-projects",
+ "agentlens-storage",
  "agentlens-telemetry",
  "agentlens-traces",
  "async-trait",
@@ -345,7 +346,11 @@ dependencies = [
  "agentlens-config",
  "agentlens-domain",
  "agentlens-observability",
+ "async-trait",
+ "reqwest",
  "thiserror 2.0.21",
+ "tokio",
+ "tracing",
 ]
 
 [[package]]
@@ -396,6 +401,7 @@ dependencies = [
  "agentlens-database",
  "agentlens-jobs",
  "agentlens-observability",
+ "agentlens-storage",
  "tokio",
  "tracing",
  "tracing-subscriber",
