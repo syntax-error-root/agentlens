@@ -160,11 +160,7 @@ fn is_ipv6_blocked(ip: Ipv6Addr) -> bool {
         return is_ipv4_blocked(v4);
     }
     // 2001:db8::/32 (Documentation)
-    if octets[0] == 0x20 && octets[1] == 0x01 && octets[2] == 0x0d && octets[3] == 0xb8 {
-        return true;
-    }
-
-    false
+    octets[0] == 0x20 && octets[1] == 0x01 && octets[2] == 0x0d && octets[3] == 0xb8
 }
 
 /// Validates target URL against SSRF rules.
