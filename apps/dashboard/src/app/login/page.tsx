@@ -5,7 +5,7 @@ import { useRouter } from "next/navigation";
 import Link from "next/link";
 import { api } from "@/lib/api";
 import { useApp } from "@/context/AppContext";
-import { AlertCircle, ArrowRight, Lock } from "lucide-react";
+import { AlertCircle, ArrowRight, Lock, Shield } from "lucide-react";
 
 export default function LoginPage() {
   const router = useRouter();
@@ -40,6 +40,26 @@ export default function LoginPage() {
     } catch (err) {
       setError(err instanceof Error ? err.message : "Invalid email or password");
     } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleOidcLogin = async () => {
+    setError(null);
+    setLoading(true);
+    try {
+      const startRes = await api.auth.oidcStart();
+      sessionStorage.setItem(
+        "agentlens_oidc_flow",
+        JSON.stringify({
+          state: startRes.state,
+          nonce: startRes.nonce,
+          code_verifier: startRes.code_verifier,
+        })
+      );
+      window.location.href = startRes.authorization_url;
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to initiate SSO login");
       setLoading(false);
     }
   };
@@ -124,6 +144,27 @@ export default function LoginPage() {
             )}
           </button>
         </form>
+
+        <div className="relative my-4">
+          <div className="absolute inset-0 flex items-center">
+            <div className="w-full border-t border-neutral-800" />
+          </div>
+          <div className="relative flex justify-center text-xs uppercase">
+            <span className="bg-neutral-950 px-2 text-neutral-500 font-mono text-[10px]">
+              Or continue with
+            </span>
+          </div>
+        </div>
+
+        <button
+          type="button"
+          onClick={handleOidcLogin}
+          disabled={loading}
+          className="w-full flex items-center justify-center gap-2 py-2.5 px-4 rounded-lg bg-neutral-900 hover:bg-neutral-850 border border-neutral-800 text-neutral-200 font-medium text-xs transition-colors disabled:opacity-50"
+        >
+          <Shield size={14} className="text-emerald-400" />
+          <span>Single Sign-On (SSO / OIDC)</span>
+        </button>
       </div>
     </div>
   );

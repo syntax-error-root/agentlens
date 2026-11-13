@@ -9,6 +9,13 @@ use serde_json::{Map, Value};
 use thiserror::Error;
 
 pub const DEFAULT_MAX_STRING_LENGTH: usize = 16_384;
+pub const LARGE_PAYLOAD_THRESHOLD_BYTES: usize = 64 * 1024; // 64 KiB
+
+/// Evaluates whether a captured content payload exceeds the inline threshold and requires S3 offload.
+#[must_use]
+pub fn should_offload_to_s3(payload_len: usize) -> bool {
+    payload_len > LARGE_PAYLOAD_THRESHOLD_BYTES
+}
 
 pub const STRIPPED_CONTENT_KEYS: &[&str] = &[
     "gen_ai.prompt",

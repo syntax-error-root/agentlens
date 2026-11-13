@@ -152,6 +152,32 @@ export const api = {
         setCsrfToken(null);
       }
     },
+    async oidcStart(): Promise<{
+      authorization_url: string;
+      state: string;
+      nonce: string;
+      code_verifier: string;
+    }> {
+      return request<{
+        authorization_url: string;
+        state: string;
+        nonce: string;
+        code_verifier: string;
+      }>("/api/v1/auth/oidc/start");
+    },
+    async oidcCallback(input: {
+      code: string;
+      nonce: string;
+      code_verifier: string;
+      state?: string;
+    }): Promise<{ user: User; csrf_token: string }> {
+      const data = await request<{ user: User; csrf_token: string }>("/api/v1/auth/oidc/callback", {
+        method: "POST",
+        body: JSON.stringify(input),
+      });
+      if (data.csrf_token) setCsrfToken(data.csrf_token);
+      return data;
+    },
   },
 
   projects: {

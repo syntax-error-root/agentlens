@@ -308,6 +308,7 @@ pub struct OidcCallbackInput {
     pub code: String,
     pub nonce: String,
     pub code_verifier: String,
+    pub state: Option<String>,
 }
 
 pub async fn oidc_callback_handler(
@@ -324,6 +325,16 @@ pub async fn oidc_callback_handler(
                 .into_response();
         }
     };
+
+    if let Some(s) = &input.state {
+        if s.trim().is_empty() {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(json!({ "error": "OIDC state parameter cannot be empty" })),
+            )
+                .into_response();
+        }
+    }
 
     let provider = MockOidcProvider;
     let tokens = match provider
@@ -355,21 +366,70 @@ pub async fn oidc_callback_handler(
     };
 
     let users_repo = UsersRepository::new(pool);
-    let user = match users_repo.get_by_email(&claims.email).await {
+    // 1. Try matching by existing OIDC (issuer, subject)
+    let user = match users_repo
+        .get_by_oidc(&claims.issuer, &claims.subject)
+        .await
+    {
         Ok(Some(u)) => u,
-        Ok(None) => match users_repo
-            .create(&claims.email, None, claims.display_name.as_deref())
-            .await
-        {
-            Ok(u) => u,
-            Err(e) => {
-                return (
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    Json(json!({ "error": format!("User creation error: {e}") })),
-                )
-                    .into_response();
+        Ok(None) => {
+            // 2. Fall back to matching by verified email address
+            match users_repo.get_by_email(&claims.email).await {
+                Ok(Some(existing_user)) => {
+                    // Link OIDC identity to existing user account
+                    match users_repo
+                        .link_oidc(existing_user.id, &claims.issuer, &claims.subject)
+                        .await
+                    {
+                        Ok(linked) => linked,
+                        Err(e) => {
+                            return (
+                                StatusCode::INTERNAL_SERVER_ERROR,
+                                Json(json!({ "error": format!("Failed to link OIDC identity: {e}") })),
+                            )
+                                .into_response();
+                        }
+                    }
+                }
+                Ok(None) => {
+                    // 3. Automatically provision new user and link OIDC identity
+                    match users_repo
+                        .create(&claims.email, None, claims.display_name.as_deref())
+                        .await
+                    {
+                        Ok(new_user) => {
+                            match users_repo
+                                .link_oidc(new_user.id, &claims.issuer, &claims.subject)
+                                .await
+                            {
+                                Ok(linked) => linked,
+                                Err(e) => {
+                                    return (
+                                        StatusCode::INTERNAL_SERVER_ERROR,
+                                        Json(json!({ "error": format!("Failed to link OIDC identity: {e}") })),
+                                    )
+                                        .into_response();
+                                }
+                            }
+                        }
+                        Err(e) => {
+                            return (
+                                StatusCode::INTERNAL_SERVER_ERROR,
+                                Json(json!({ "error": format!("User creation error: {e}") })),
+                            )
+                                .into_response();
+                        }
+                    }
+                }
+                Err(e) => {
+                    return (
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        Json(json!({ "error": format!("Database error: {e}") })),
+                    )
+                        .into_response();
+                }
             }
-        },
+        }
         Err(e) => {
             return (
                 StatusCode::INTERNAL_SERVER_ERROR,
