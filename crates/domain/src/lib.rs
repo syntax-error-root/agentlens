@@ -647,6 +647,143 @@ pub fn decode_cursor(cursor: &str) -> Option<(DateTime<Utc>, Uuid)> {
     Some((ts, id))
 }
 
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct AnalyticsFilters {
+    pub project_id: Uuid,
+    pub environment_id: Option<Uuid>,
+    pub from: Option<DateTime<Utc>>,
+    pub to: Option<DateTime<Utc>>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AnalyticsOverview {
+    pub total_cost: Option<Decimal>,
+    pub has_unpriced_usage: bool,
+    pub total_tokens: i64,
+    pub total_input_tokens: i64,
+    pub total_output_tokens: i64,
+    pub total_cached_tokens: i64,
+    pub total_reasoning_tokens: i64,
+    pub total_traces: i64,
+    pub total_errors: i64,
+    pub error_rate: f64,
+    pub p50_duration_ms: Option<f64>,
+    pub p95_duration_ms: Option<f64>,
+    pub p99_duration_ms: Option<f64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TokenUsageTimePoint {
+    pub timestamp: DateTime<Utc>,
+    pub input_tokens: i64,
+    pub output_tokens: i64,
+    pub cached_tokens: i64,
+    pub reasoning_tokens: i64,
+    pub total_tokens: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TokenAnalyticsResult {
+    pub time_series: Vec<TokenUsageTimePoint>,
+    pub total_input_tokens: i64,
+    pub total_output_tokens: i64,
+    pub total_cached_tokens: i64,
+    pub total_reasoning_tokens: i64,
+    pub total_tokens: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CostTimePoint {
+    pub date: String,
+    pub cost: Option<Decimal>,
+    pub currency: String,
+    pub unpriced_traces_count: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CostAnalyticsResult {
+    pub time_series: Vec<CostTimePoint>,
+    pub total_estimated_cost: Option<Decimal>,
+    pub currency: String,
+    pub unpriced_usage_count: i64,
+    pub has_unpriced_usage: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ModelAnalyticsItem {
+    pub provider: String,
+    pub model: String,
+    pub call_count: i64,
+    pub total_input_tokens: i64,
+    pub total_output_tokens: i64,
+    pub total_cached_tokens: i64,
+    pub total_reasoning_tokens: i64,
+    pub total_tokens: i64,
+    pub estimated_cost: Option<Decimal>,
+    pub currency: String,
+    pub has_unpriced: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AgentAnalyticsItem {
+    pub agent_id: Option<Uuid>,
+    pub agent_name: String,
+    pub trace_count: i64,
+    pub error_count: i64,
+    pub error_rate: f64,
+    pub total_tokens: i64,
+    pub estimated_cost: Option<Decimal>,
+    pub p50_duration_ms: Option<f64>,
+    pub p95_duration_ms: Option<f64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ToolAnalyticsItem {
+    pub tool_name: String,
+    pub call_count: i64,
+    pub error_count: i64,
+    pub error_rate: f64,
+    pub p50_duration_ms: Option<f64>,
+    pub p95_duration_ms: Option<f64>,
+    pub p99_duration_ms: Option<f64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LatencyAnalyticsResult {
+    pub p50_duration_ms: Option<f64>,
+    pub p95_duration_ms: Option<f64>,
+    pub p99_duration_ms: Option<f64>,
+    pub min_duration_ms: Option<f64>,
+    pub max_duration_ms: Option<f64>,
+    pub avg_duration_ms: Option<f64>,
+    pub total_count: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ErrorTimePoint {
+    pub timestamp: DateTime<Utc>,
+    pub error_count: i64,
+    pub total_count: i64,
+    pub error_rate: f64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TopErrorItem {
+    pub error_type: String,
+    pub count: i64,
+    pub sample_message: Option<String>,
+    pub last_seen_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ErrorAnalyticsResult {
+    pub total_errors: i64,
+    pub total_traces: i64,
+    pub error_rate: f64,
+    pub time_series: Vec<ErrorTimePoint>,
+    pub top_errors: Vec<TopErrorItem>,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -3,9 +3,13 @@
 //! `agentlens-jobs` crate.
 //! Durable transactional outbox processor, exponential backoff, and trace finalization.
 
-use agentlens_database::{DatabaseError, DbPool, OutboxRepository, TracesRepository};
-use agentlens_domain::{OutboxJob, TraceId};
+use agentlens_database::{
+    DailyMetricsRepository, DatabaseError, DbPool, ModelPricingRepository, OutboxRepository,
+    TokenUsagesRepository, TracesRepository,
+};
+use agentlens_domain::{OutboxJob, TraceId, TraceStatus};
 use agentlens_observability::ObservabilityRegistry;
+use agentlens_pricing::ModelPricingEngine;
 use rand::Rng;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
@@ -183,14 +187,74 @@ impl OutboxWorker {
                 let trace_id = TraceId::new(&payload.trace_id)
                     .map_err(|e| JobError::InvalidTraceId(e.to_string()))?;
 
+                // 1. Evaluate pricing on token usages for this trace
+                let pricing_repo = ModelPricingRepository::new(&self.pool);
+                let rate_cards = pricing_repo.list_all().await?;
+                let pricing_engine = ModelPricingEngine::new(rate_cards);
+
+                let token_repo = TokenUsagesRepository::new(&self.pool);
+                let usages = token_repo
+                    .list_by_trace(payload.project_id, &trace_id)
+                    .await?;
+
+                for usage in usages {
+                    let evaluated = pricing_engine.calculate_cost(
+                        &usage.provider,
+                        &usage.model,
+                        usage.input_tokens,
+                        usage.output_tokens,
+                        usage.cached_input_tokens,
+                        usage.reasoning_tokens,
+                        usage.recorded_at,
+                    );
+
+                    if let Some(cost) = evaluated {
+                        token_repo
+                            .update_pricing_evaluation(
+                                usage.id,
+                                Some(cost.cost_estimate),
+                                Some(&cost.pricing_version),
+                                Some(cost.input_rate_per_million),
+                                Some(cost.output_rate_per_million),
+                                Some(cost.cached_rate_per_million),
+                            )
+                            .await?;
+                    } else {
+                        // Unpriced model: keep cost_estimate NULL, do not substitute $0.00
+                        token_repo
+                            .update_pricing_evaluation(usage.id, None, None, None, None, None)
+                            .await?;
+                    }
+                }
+
+                // 2. Finalize trace aggregations
                 let traces_repo = TracesRepository::new(&self.pool);
                 let finalized = traces_repo
                     .finalize_trace(payload.project_id, &trace_id)
                     .await?;
 
-                if finalized.is_none() {
-                    return Err(JobError::TraceNotFound(payload.trace_id));
-                }
+                let trace = match finalized {
+                    Some(t) => t,
+                    None => return Err(JobError::TraceNotFound(payload.trace_id)),
+                };
+
+                // 3. Roll up into daily_metrics
+                let daily_repo = DailyMetricsRepository::new(&self.pool);
+                let metric_date = trace.started_at.date_naive();
+                let is_error = trace.status == TraceStatus::Error;
+                daily_repo
+                    .record_trace_metric(
+                        trace.organization_id,
+                        trace.project_id,
+                        trace.environment_id,
+                        metric_date,
+                        trace.duration_ms,
+                        trace.estimated_cost,
+                        trace.total_input_tokens,
+                        trace.total_output_tokens,
+                        is_error,
+                    )
+                    .await?;
 
                 Ok(())
             }

@@ -4,6 +4,7 @@
 //! HTTP routing, middleware, health endpoints, and control-plane API handlers.
 
 pub mod agents;
+pub mod analytics;
 pub mod auth;
 pub mod middleware;
 pub mod organizations;
@@ -131,6 +132,38 @@ pub fn create_router(state: AppState) -> Router {
         .route(
             "/api/v1/sessions/{session_id}/traces",
             get(sessions::list_session_traces_handler),
+        )
+        // Analytics
+        .route(
+            "/api/v1/analytics/overview",
+            get(analytics::get_overview_handler),
+        )
+        .route(
+            "/api/v1/analytics/tokens",
+            get(analytics::get_tokens_handler),
+        )
+        .route("/api/v1/analytics/costs", get(analytics::get_costs_handler))
+        .route(
+            "/api/v1/analytics/models",
+            get(analytics::get_models_handler),
+        )
+        .route(
+            "/api/v1/analytics/agents",
+            get(analytics::get_agents_handler),
+        )
+        .route("/api/v1/analytics/tools", get(analytics::get_tools_handler))
+        .route(
+            "/api/v1/analytics/latency",
+            get(analytics::get_latency_handler),
+        )
+        .route(
+            "/api/v1/analytics/errors",
+            get(analytics::get_errors_handler),
+        )
+        // Pricing
+        .route(
+            "/api/v1/pricing",
+            get(analytics::list_pricing_handler).post(analytics::create_pricing_handler),
         )
         .layer(from_fn_with_state(
             state_arc.clone(),

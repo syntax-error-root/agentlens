@@ -11,6 +11,7 @@ agentlens-domain = { workspace = true }
 agentlens-config = { workspace = true }
 agentlens-database = { workspace = true }
 agentlens-observability = { workspace = true }
+agentlens-pricing = { workspace = true }
 agentlens-traces = { workspace = true }
 thiserror = { workspace = true }
 serde = { workspace = true }
