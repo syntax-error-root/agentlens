@@ -16,6 +16,28 @@ dev = [
     "ruff>=0.8.0",
     "mypy>=1.13.0"
 ]
+langgraph = [
+    "langchain-core>=0.2.0",
+]
+litellm = [
+    "litellm>=1.40.0",
+]
+crewai = [
+    "crewai>=0.50.0",
+]
+openai-agents = [
+    "openai>=1.40.0",
+]
+mcp = [
+    "mcp>=1.0.0",
+]
+all-integrations = [
+    "langchain-core>=0.2.0",
+    "litellm>=1.40.0",
+    "crewai>=0.50.0",
+    "openai>=1.40.0",
+    "mcp>=1.0.0",
+]
 
 [build-system]
 requires = ["hatchling"]

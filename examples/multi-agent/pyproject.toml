@@ -1,0 +1,11 @@
+[project]
+name = "multi-agent-example"
+version = "0.1.0"
+description = "AgentLens Multi-Agent Orchestration Tracing Example"
+requires-python = ">=3.10"
+dependencies = [
+    "agentlens",
+]
+
+[tool.uv.sources]
+agentlens = { path = "../../sdk/python", editable = true }
