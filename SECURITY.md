@@ -32,6 +32,6 @@ AgentLens incorporates defense-in-depth mechanisms by design:
 
 If you discover a security vulnerability in AgentLens, please report it through GitHub Private Vulnerability Reporting or email the security response team:
 
-- **Email:** `security@agentlens.dev` (or open a GitHub Security Advisory)
+- **Email:** `default13789@gmail.com` (or open a GitHub Security Advisory)
 - **Response Timeline:** We will acknowledge receipt within 24 hours and provide an initial assessment within 72 hours.
 - **Coordination:** We coordinate fixes, CVE assignments, and public disclosures with reporting researchers before public release.
