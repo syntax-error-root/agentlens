@@ -1,7 +1,10 @@
 import {
   Agent,
   AgentAnalyticsItem,
+  AgentHealthReport,
   AgentVersion,
+  AlertEvent,
+  AlertRule,
   AnalyticsOverview,
   ApiKey,
   CostAnalyticsResult,
@@ -10,6 +13,7 @@ import {
   LatencyAnalyticsResult,
   ModelAnalyticsItem,
   ModelPricing,
+  NotificationChannel,
   OrgRole,
   Organization,
   Project,
@@ -252,6 +256,11 @@ export const api = {
         `/api/v1/agents/${encodeURIComponent(agentId)}/traces?limit=${limit}`
       );
     },
+    async getHealth(agentId: string, window = "24h"): Promise<AgentHealthReport> {
+      return request<AgentHealthReport>(
+        `/api/v1/agents/${encodeURIComponent(agentId)}/health?window=${encodeURIComponent(window)}`
+      );
+    },
   },
 
   traces: {
@@ -419,6 +428,85 @@ export const api = {
   pricing: {
     async list(): Promise<ModelPricing[]> {
       return request<ModelPricing[]>("/api/v1/pricing");
+    },
+  },
+
+  alerts: {
+    async listRules(projectId: string): Promise<AlertRule[]> {
+      return request<AlertRule[]>(`/api/v1/projects/${encodeURIComponent(projectId)}/alert-rules`);
+    },
+    async createRule(
+      projectId: string,
+      data: {
+        name: string;
+        metric: string;
+        operator: string;
+        threshold: number;
+        window_seconds: number;
+        min_sample_count?: number;
+        cooldown_seconds?: number;
+        severity?: string;
+        description?: string;
+      }
+    ): Promise<AlertRule> {
+      return request<AlertRule>(`/api/v1/projects/${encodeURIComponent(projectId)}/alert-rules`, {
+        method: "POST",
+        body: JSON.stringify(data),
+      });
+    },
+    async deleteRule(ruleId: string): Promise<void> {
+      await request<void>(`/api/v1/alert-rules/${encodeURIComponent(ruleId)}`, {
+        method: "DELETE",
+      });
+    },
+    async listEvents(
+      projectId: string,
+      status?: string,
+      limit = 50,
+      offset = 0
+    ): Promise<AlertEvent[]> {
+      const q = new URLSearchParams({ limit: limit.toString(), offset: offset.toString() });
+      if (status) q.set("status", status);
+      return request<AlertEvent[]>(
+        `/api/v1/projects/${encodeURIComponent(projectId)}/alert-events?${q.toString()}`
+      );
+    },
+    async acknowledgeEvent(eventId: string): Promise<AlertEvent> {
+      return request<AlertEvent>(
+        `/api/v1/alert-events/${encodeURIComponent(eventId)}/acknowledge`,
+        { method: "POST" }
+      );
+    },
+  },
+
+  notificationChannels: {
+    async list(projectId: string): Promise<NotificationChannel[]> {
+      return request<NotificationChannel[]>(
+        `/api/v1/projects/${encodeURIComponent(projectId)}/notification-channels`
+      );
+    },
+    async create(
+      projectId: string,
+      data: { channel_type: string; name: string; config: Record<string, unknown> }
+    ): Promise<NotificationChannel> {
+      return request<NotificationChannel>(
+        `/api/v1/projects/${encodeURIComponent(projectId)}/notification-channels`,
+        {
+          method: "POST",
+          body: JSON.stringify(data),
+        }
+      );
+    },
+    async delete(channelId: string): Promise<void> {
+      await request<void>(`/api/v1/notification-channels/${encodeURIComponent(channelId)}`, {
+        method: "DELETE",
+      });
+    },
+    async test(channelId: string): Promise<{ success: boolean; message?: string; error?: string }> {
+      return request<{ success: boolean; message?: string; error?: string }>(
+        `/api/v1/notification-channels/${encodeURIComponent(channelId)}/test`,
+        { method: "POST" }
+      );
     },
   },
 };
