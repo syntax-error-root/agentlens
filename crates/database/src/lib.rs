@@ -5,13 +5,16 @@
 
 use agentlens_config::AppConfig;
 use agentlens_domain::{
-    decode_cursor, encode_cursor, Agent, AgentAnalyticsItem, AgentVersion, AnalyticsFilters,
-    AnalyticsOverview, ApiKey, AuditLog, CostAnalyticsResult, CostTimePoint, Environment,
-    ErrorAnalyticsResult, ErrorTimePoint, LatencyAnalyticsResult, ModelAnalyticsItem, ModelPricing,
-    OrgRole, Organization, OrganizationMember, OutboxJob, Project, ProjectOverviewMetrics, Session,
-    Span, SpanDetail, SpanEvent, SpanId, SpanLink, SpanType, TokenAnalyticsResult, TokenUsage,
-    TokenUsageTimePoint, ToolAnalyticsItem, TopErrorItem, Trace, TraceId, TraceQueryFilters,
-    TraceQueryResult, TraceStatus, UsageSource, User,
+    decode_cursor, encode_cursor, Agent, AgentAnalyticsItem, AgentHealthReport, AgentHealthStatus,
+    AgentVersion, AlertEvent, AlertEventStatus, AlertMetric, AlertOperator, AlertRule,
+    AlertSeverity, AnalyticsFilters, AnalyticsOverview, ApiKey, AuditLog, CostAnalyticsResult,
+    CostTimePoint, Environment, ErrorAnalyticsResult, ErrorTimePoint, LatencyAnalyticsResult,
+    ModelAnalyticsItem, ModelPricing, NotificationChannel, NotificationChannelType,
+    NotificationDelivery, NotificationDeliveryStatus, OrgRole, Organization, OrganizationMember,
+    OutboxJob, Project, ProjectOverviewMetrics, Session, Span, SpanDetail, SpanEvent, SpanId,
+    SpanLink, SpanType, TokenAnalyticsResult, TokenUsage, TokenUsageTimePoint, ToolAnalyticsItem,
+    TopErrorItem, Trace, TraceId, TraceQueryFilters, TraceQueryResult, TraceStatus, UsageSource,
+    User,
 };
 use agentlens_telemetry::NormalizedSpan;
 use chrono::{DateTime, Utc};
@@ -4156,6 +4159,1023 @@ impl<'a> AnalyticsRepository<'a> {
             error_rate,
             time_series,
             top_errors,
+        })
+    }
+}
+
+pub struct AlertRulesRepository<'a> {
+    pool: &'a PgPool,
+}
+
+impl<'a> AlertRulesRepository<'a> {
+    #[must_use]
+    pub fn new(pool: &'a PgPool) -> Self {
+        Self { pool }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub async fn create(
+        &self,
+        organization_id: Uuid,
+        project_id: Uuid,
+        environment_id: Option<Uuid>,
+        name: &str,
+        description: Option<&str>,
+        enabled: bool,
+        metric: AlertMetric,
+        operator: AlertOperator,
+        threshold: Decimal,
+        window_seconds: i32,
+        min_sample_count: i32,
+        group_by: serde_json::Value,
+        filters: serde_json::Value,
+        cooldown_seconds: i32,
+        severity: AlertSeverity,
+        created_by: Option<Uuid>,
+    ) -> Result<AlertRule, DatabaseError> {
+        let row = sqlx::query(
+            r#"
+            INSERT INTO alert_rules (
+                organization_id, project_id, environment_id, name, description,
+                enabled, metric, operator, threshold, window_seconds, min_sample_count,
+                group_by, filters, cooldown_seconds, severity, created_by
+            )
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)
+            RETURNING id, organization_id, project_id, environment_id, name, description,
+                      enabled, metric, operator, threshold, window_seconds, min_sample_count,
+                      group_by, filters, cooldown_seconds, severity, created_by, created_at, updated_at
+            "#,
+        )
+        .bind(organization_id)
+        .bind(project_id)
+        .bind(environment_id)
+        .bind(name)
+        .bind(description)
+        .bind(enabled)
+        .bind(metric.as_str())
+        .bind(operator.as_str())
+        .bind(threshold)
+        .bind(window_seconds)
+        .bind(min_sample_count)
+        .bind(group_by)
+        .bind(filters)
+        .bind(cooldown_seconds)
+        .bind(severity.as_str())
+        .bind(created_by)
+        .fetch_one(self.pool)
+        .await?;
+
+        map_alert_rule_row(&row)
+    }
+
+    pub async fn get_by_id(
+        &self,
+        project_id: Uuid,
+        rule_id: Uuid,
+    ) -> Result<Option<AlertRule>, DatabaseError> {
+        let row = sqlx::query(
+            r#"
+            SELECT id, organization_id, project_id, environment_id, name, description,
+                   enabled, metric, operator, threshold, window_seconds, min_sample_count,
+                   group_by, filters, cooldown_seconds, severity, created_by, created_at, updated_at
+            FROM alert_rules
+            WHERE project_id = $1 AND id = $2
+            "#,
+        )
+        .bind(project_id)
+        .bind(rule_id)
+        .fetch_optional(self.pool)
+        .await?;
+
+        match row {
+            Some(r) => Ok(Some(map_alert_rule_row(&r)?)),
+            None => Ok(None),
+        }
+    }
+
+    pub async fn list_by_project(&self, project_id: Uuid) -> Result<Vec<AlertRule>, DatabaseError> {
+        let rows = sqlx::query(
+            r#"
+            SELECT id, organization_id, project_id, environment_id, name, description,
+                   enabled, metric, operator, threshold, window_seconds, min_sample_count,
+                   group_by, filters, cooldown_seconds, severity, created_by, created_at, updated_at
+            FROM alert_rules
+            WHERE project_id = $1
+            ORDER BY created_at DESC
+            "#,
+        )
+        .bind(project_id)
+        .fetch_all(self.pool)
+        .await?;
+
+        let mut out = Vec::with_capacity(rows.len());
+        for row in rows {
+            out.push(map_alert_rule_row(&row)?);
+        }
+        Ok(out)
+    }
+
+    pub async fn list_all_enabled(&self) -> Result<Vec<AlertRule>, DatabaseError> {
+        let rows = sqlx::query(
+            r#"
+            SELECT id, organization_id, project_id, environment_id, name, description,
+                   enabled, metric, operator, threshold, window_seconds, min_sample_count,
+                   group_by, filters, cooldown_seconds, severity, created_by, created_at, updated_at
+            FROM alert_rules
+            WHERE enabled = TRUE
+            ORDER BY created_at ASC
+            "#,
+        )
+        .fetch_all(self.pool)
+        .await?;
+
+        let mut out = Vec::with_capacity(rows.len());
+        for row in rows {
+            out.push(map_alert_rule_row(&row)?);
+        }
+        Ok(out)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub async fn update(
+        &self,
+        project_id: Uuid,
+        rule_id: Uuid,
+        name: Option<&str>,
+        description: Option<Option<&str>>,
+        enabled: Option<bool>,
+        metric: Option<AlertMetric>,
+        operator: Option<AlertOperator>,
+        threshold: Option<Decimal>,
+        window_seconds: Option<i32>,
+        min_sample_count: Option<i32>,
+        cooldown_seconds: Option<i32>,
+        severity: Option<AlertSeverity>,
+    ) -> Result<Option<AlertRule>, DatabaseError> {
+        let existing = match self.get_by_id(project_id, rule_id).await? {
+            Some(r) => r,
+            None => return Ok(None),
+        };
+
+        let new_name = name.unwrap_or(&existing.name);
+        let new_description = match description {
+            Some(d) => d.map(|s| s.to_string()),
+            None => existing.description,
+        };
+        let new_enabled = enabled.unwrap_or(existing.enabled);
+        let new_metric = metric.unwrap_or(existing.metric);
+        let new_operator = operator.unwrap_or(existing.operator);
+        let new_threshold = threshold.unwrap_or(existing.threshold);
+        let new_window = window_seconds.unwrap_or(existing.window_seconds);
+        let new_min_samples = min_sample_count.unwrap_or(existing.min_sample_count);
+        let new_cooldown = cooldown_seconds.unwrap_or(existing.cooldown_seconds);
+        let new_severity = severity.unwrap_or(existing.severity);
+
+        let row = sqlx::query(
+            r#"
+            UPDATE alert_rules
+            SET name = $1, description = $2, enabled = $3, metric = $4,
+                operator = $5, threshold = $6, window_seconds = $7,
+                min_sample_count = $8, cooldown_seconds = $9, severity = $10,
+                updated_at = now()
+            WHERE project_id = $11 AND id = $12
+            RETURNING id, organization_id, project_id, environment_id, name, description,
+                      enabled, metric, operator, threshold, window_seconds, min_sample_count,
+                      group_by, filters, cooldown_seconds, severity, created_by, created_at, updated_at
+            "#,
+        )
+        .bind(new_name)
+        .bind(new_description)
+        .bind(new_enabled)
+        .bind(new_metric.as_str())
+        .bind(new_operator.as_str())
+        .bind(new_threshold)
+        .bind(new_window)
+        .bind(new_min_samples)
+        .bind(new_cooldown)
+        .bind(new_severity.as_str())
+        .bind(project_id)
+        .bind(rule_id)
+        .fetch_optional(self.pool)
+        .await?;
+
+        match row {
+            Some(r) => Ok(Some(map_alert_rule_row(&r)?)),
+            None => Ok(None),
+        }
+    }
+
+    pub async fn delete(&self, project_id: Uuid, rule_id: Uuid) -> Result<bool, DatabaseError> {
+        let result = sqlx::query(
+            r#"
+            DELETE FROM alert_rules
+            WHERE project_id = $1 AND id = $2
+            "#,
+        )
+        .bind(project_id)
+        .bind(rule_id)
+        .execute(self.pool)
+        .await?;
+
+        Ok(result.rows_affected() > 0)
+    }
+}
+
+fn map_alert_rule_row(row: &PgRow) -> Result<AlertRule, DatabaseError> {
+    let metric_str: String = row.get("metric");
+    let operator_str: String = row.get("operator");
+    let severity_str: String = row.get("severity");
+
+    let metric = AlertMetric::from_str(&metric_str)
+        .map_err(|e| DatabaseError::NotFound(format!("Invalid metric: {e}")))?;
+    let operator = AlertOperator::from_str(&operator_str)
+        .map_err(|e| DatabaseError::NotFound(format!("Invalid operator: {e}")))?;
+    let severity = AlertSeverity::from_str(&severity_str)
+        .map_err(|e| DatabaseError::NotFound(format!("Invalid severity: {e}")))?;
+
+    Ok(AlertRule {
+        id: row.get("id"),
+        organization_id: row.get("organization_id"),
+        project_id: row.get("project_id"),
+        environment_id: row.get("environment_id"),
+        name: row.get("name"),
+        description: row.get("description"),
+        enabled: row.get("enabled"),
+        metric,
+        operator,
+        threshold: row.get("threshold"),
+        window_seconds: row.get("window_seconds"),
+        min_sample_count: row.get("min_sample_count"),
+        group_by: row.get("group_by"),
+        filters: row.get("filters"),
+        cooldown_seconds: row.get("cooldown_seconds"),
+        severity,
+        created_by: row.get("created_by"),
+        created_at: row.get("created_at"),
+        updated_at: row.get("updated_at"),
+    })
+}
+
+pub struct AlertEventsRepository<'a> {
+    pool: &'a PgPool,
+}
+
+impl<'a> AlertEventsRepository<'a> {
+    #[must_use]
+    pub fn new(pool: &'a PgPool) -> Self {
+        Self { pool }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub async fn create(
+        &self,
+        organization_id: Uuid,
+        project_id: Uuid,
+        rule_id: Uuid,
+        fingerprint: &str,
+        severity: AlertSeverity,
+        summary: &str,
+        details: serde_json::Value,
+    ) -> Result<AlertEvent, DatabaseError> {
+        let row = sqlx::query(
+            r#"
+            INSERT INTO alert_events (
+                organization_id, project_id, rule_id, fingerprint, status,
+                severity, summary, details, first_triggered_at, last_triggered_at
+            )
+            VALUES ($1, $2, $3, $4, 'firing', $5, $6, $7, now(), now())
+            RETURNING id, organization_id, project_id, rule_id, fingerprint, status,
+                      severity, summary, details, first_triggered_at, last_triggered_at,
+                      resolved_at, acknowledged_at, acknowledged_by, created_at
+            "#,
+        )
+        .bind(organization_id)
+        .bind(project_id)
+        .bind(rule_id)
+        .bind(fingerprint)
+        .bind(severity.as_str())
+        .bind(summary)
+        .bind(details)
+        .fetch_one(self.pool)
+        .await?;
+
+        map_alert_event_row(&row)
+    }
+
+    pub async fn get_by_id(
+        &self,
+        project_id: Uuid,
+        event_id: Uuid,
+    ) -> Result<Option<AlertEvent>, DatabaseError> {
+        let row = sqlx::query(
+            r#"
+            SELECT id, organization_id, project_id, rule_id, fingerprint, status,
+                   severity, summary, details, first_triggered_at, last_triggered_at,
+                   resolved_at, acknowledged_at, acknowledged_by, created_at
+            FROM alert_events
+            WHERE project_id = $1 AND id = $2
+            "#,
+        )
+        .bind(project_id)
+        .bind(event_id)
+        .fetch_optional(self.pool)
+        .await?;
+
+        match row {
+            Some(r) => Ok(Some(map_alert_event_row(&r)?)),
+            None => Ok(None),
+        }
+    }
+
+    pub async fn list_by_project(
+        &self,
+        project_id: Uuid,
+        status_filter: Option<&str>,
+        limit: i64,
+        offset: i64,
+    ) -> Result<Vec<AlertEvent>, DatabaseError> {
+        let rows = sqlx::query(
+            r#"
+            SELECT id, organization_id, project_id, rule_id, fingerprint, status,
+                   severity, summary, details, first_triggered_at, last_triggered_at,
+                   resolved_at, acknowledged_at, acknowledged_by, created_at
+            FROM alert_events
+            WHERE project_id = $1
+              AND ($2::VARCHAR IS NULL OR status = $2)
+            ORDER BY last_triggered_at DESC
+            LIMIT $3 OFFSET $4
+            "#,
+        )
+        .bind(project_id)
+        .bind(status_filter)
+        .bind(limit)
+        .bind(offset)
+        .fetch_all(self.pool)
+        .await?;
+
+        let mut out = Vec::with_capacity(rows.len());
+        for row in rows {
+            out.push(map_alert_event_row(&row)?);
+        }
+        Ok(out)
+    }
+
+    pub async fn find_active_by_fingerprint(
+        &self,
+        project_id: Uuid,
+        rule_id: Uuid,
+        fingerprint: &str,
+    ) -> Result<Option<AlertEvent>, DatabaseError> {
+        let row = sqlx::query(
+            r#"
+            SELECT id, organization_id, project_id, rule_id, fingerprint, status,
+                   severity, summary, details, first_triggered_at, last_triggered_at,
+                   resolved_at, acknowledged_at, acknowledged_by, created_at
+            FROM alert_events
+            WHERE project_id = $1 AND rule_id = $2 AND fingerprint = $3
+              AND status IN ('firing', 'acknowledged')
+            ORDER BY last_triggered_at DESC
+            LIMIT 1
+            "#,
+        )
+        .bind(project_id)
+        .bind(rule_id)
+        .bind(fingerprint)
+        .fetch_optional(self.pool)
+        .await?;
+
+        match row {
+            Some(r) => Ok(Some(map_alert_event_row(&r)?)),
+            None => Ok(None),
+        }
+    }
+
+    pub async fn find_last_resolved_by_fingerprint(
+        &self,
+        project_id: Uuid,
+        rule_id: Uuid,
+        fingerprint: &str,
+    ) -> Result<Option<AlertEvent>, DatabaseError> {
+        let row = sqlx::query(
+            r#"
+            SELECT id, organization_id, project_id, rule_id, fingerprint, status,
+                   severity, summary, details, first_triggered_at, last_triggered_at,
+                   resolved_at, acknowledged_at, acknowledged_by, created_at
+            FROM alert_events
+            WHERE project_id = $1 AND rule_id = $2 AND fingerprint = $3
+              AND status = 'resolved'
+            ORDER BY resolved_at DESC
+            LIMIT 1
+            "#,
+        )
+        .bind(project_id)
+        .bind(rule_id)
+        .bind(fingerprint)
+        .fetch_optional(self.pool)
+        .await?;
+
+        match row {
+            Some(r) => Ok(Some(map_alert_event_row(&r)?)),
+            None => Ok(None),
+        }
+    }
+
+    pub async fn update_triggered(
+        &self,
+        event_id: Uuid,
+        details: serde_json::Value,
+    ) -> Result<(), DatabaseError> {
+        sqlx::query(
+            r#"
+            UPDATE alert_events
+            SET last_triggered_at = now(), details = $1
+            WHERE id = $2
+            "#,
+        )
+        .bind(details)
+        .bind(event_id)
+        .execute(self.pool)
+        .await?;
+
+        Ok(())
+    }
+
+    pub async fn acknowledge(
+        &self,
+        project_id: Uuid,
+        event_id: Uuid,
+        user_id: Option<Uuid>,
+    ) -> Result<Option<AlertEvent>, DatabaseError> {
+        let row = sqlx::query(
+            r#"
+            UPDATE alert_events
+            SET status = 'acknowledged', acknowledged_at = now(), acknowledged_by = $1
+            WHERE project_id = $2 AND id = $3 AND status = 'firing'
+            RETURNING id, organization_id, project_id, rule_id, fingerprint, status,
+                      severity, summary, details, first_triggered_at, last_triggered_at,
+                      resolved_at, acknowledged_at, acknowledged_by, created_at
+            "#,
+        )
+        .bind(user_id)
+        .bind(project_id)
+        .bind(event_id)
+        .fetch_optional(self.pool)
+        .await?;
+
+        match row {
+            Some(r) => Ok(Some(map_alert_event_row(&r)?)),
+            None => Ok(None),
+        }
+    }
+
+    pub async fn resolve(&self, event_id: Uuid) -> Result<Option<AlertEvent>, DatabaseError> {
+        let row = sqlx::query(
+            r#"
+            UPDATE alert_events
+            SET status = 'resolved', resolved_at = now()
+            WHERE id = $1 AND status IN ('firing', 'acknowledged')
+            RETURNING id, organization_id, project_id, rule_id, fingerprint, status,
+                      severity, summary, details, first_triggered_at, last_triggered_at,
+                      resolved_at, acknowledged_at, acknowledged_by, created_at
+            "#,
+        )
+        .bind(event_id)
+        .fetch_optional(self.pool)
+        .await?;
+
+        match row {
+            Some(r) => Ok(Some(map_alert_event_row(&r)?)),
+            None => Ok(None),
+        }
+    }
+}
+
+fn map_alert_event_row(row: &PgRow) -> Result<AlertEvent, DatabaseError> {
+    let status_str: String = row.get("status");
+    let severity_str: String = row.get("severity");
+
+    let status = AlertEventStatus::from_str(&status_str)
+        .map_err(|e| DatabaseError::NotFound(format!("Invalid status: {e}")))?;
+    let severity = AlertSeverity::from_str(&severity_str)
+        .map_err(|e| DatabaseError::NotFound(format!("Invalid severity: {e}")))?;
+
+    Ok(AlertEvent {
+        id: row.get("id"),
+        organization_id: row.get("organization_id"),
+        project_id: row.get("project_id"),
+        rule_id: row.get("rule_id"),
+        fingerprint: row.get("fingerprint"),
+        status,
+        severity,
+        summary: row.get("summary"),
+        details: row.get("details"),
+        first_triggered_at: row.get("first_triggered_at"),
+        last_triggered_at: row.get("last_triggered_at"),
+        resolved_at: row.get("resolved_at"),
+        acknowledged_at: row.get("acknowledged_at"),
+        acknowledged_by: row.get("acknowledged_by"),
+        created_at: row.get("created_at"),
+    })
+}
+
+pub struct NotificationChannelsRepository<'a> {
+    pool: &'a PgPool,
+}
+
+impl<'a> NotificationChannelsRepository<'a> {
+    #[must_use]
+    pub fn new(pool: &'a PgPool) -> Self {
+        Self { pool }
+    }
+
+    pub async fn create(
+        &self,
+        organization_id: Uuid,
+        project_id: Option<Uuid>,
+        channel_type: NotificationChannelType,
+        name: &str,
+        encrypted_config: &str,
+        key_version: &str,
+    ) -> Result<NotificationChannel, DatabaseError> {
+        let row = sqlx::query(
+            r#"
+            INSERT INTO notification_channels (
+                organization_id, project_id, channel_type, name,
+                encrypted_config, key_version, enabled
+            )
+            VALUES ($1, $2, $3, $4, $5, $6, TRUE)
+            RETURNING id, organization_id, project_id, channel_type, name,
+                      encrypted_config, key_version, enabled, created_at, updated_at
+            "#,
+        )
+        .bind(organization_id)
+        .bind(project_id)
+        .bind(channel_type.as_str())
+        .bind(name)
+        .bind(encrypted_config)
+        .bind(key_version)
+        .fetch_one(self.pool)
+        .await?;
+
+        map_notification_channel_row(&row)
+    }
+
+    pub async fn get_by_id(
+        &self,
+        project_id: Uuid,
+        channel_id: Uuid,
+    ) -> Result<Option<NotificationChannel>, DatabaseError> {
+        let row = sqlx::query(
+            r#"
+            SELECT id, organization_id, project_id, channel_type, name,
+                   encrypted_config, key_version, enabled, created_at, updated_at
+            FROM notification_channels
+            WHERE id = $1 AND (project_id = $2 OR project_id IS NULL)
+            "#,
+        )
+        .bind(channel_id)
+        .bind(project_id)
+        .fetch_optional(self.pool)
+        .await?;
+
+        match row {
+            Some(r) => Ok(Some(map_notification_channel_row(&r)?)),
+            None => Ok(None),
+        }
+    }
+
+    pub async fn list_by_project(
+        &self,
+        project_id: Uuid,
+    ) -> Result<Vec<NotificationChannel>, DatabaseError> {
+        let rows = sqlx::query(
+            r#"
+            SELECT id, organization_id, project_id, channel_type, name,
+                   encrypted_config, key_version, enabled, created_at, updated_at
+            FROM notification_channels
+            WHERE project_id = $1 OR project_id IS NULL
+            ORDER BY created_at DESC
+            "#,
+        )
+        .bind(project_id)
+        .fetch_all(self.pool)
+        .await?;
+
+        let mut out = Vec::with_capacity(rows.len());
+        for row in rows {
+            out.push(map_notification_channel_row(&row)?);
+        }
+        Ok(out)
+    }
+
+    pub async fn list_enabled_for_project(
+        &self,
+        project_id: Uuid,
+    ) -> Result<Vec<NotificationChannel>, DatabaseError> {
+        let rows = sqlx::query(
+            r#"
+            SELECT id, organization_id, project_id, channel_type, name,
+                   encrypted_config, key_version, enabled, created_at, updated_at
+            FROM notification_channels
+            WHERE (project_id = $1 OR project_id IS NULL) AND enabled = TRUE
+            ORDER BY created_at ASC
+            "#,
+        )
+        .bind(project_id)
+        .fetch_all(self.pool)
+        .await?;
+
+        let mut out = Vec::with_capacity(rows.len());
+        for row in rows {
+            out.push(map_notification_channel_row(&row)?);
+        }
+        Ok(out)
+    }
+
+    pub async fn update(
+        &self,
+        project_id: Uuid,
+        channel_id: Uuid,
+        name: Option<&str>,
+        encrypted_config: Option<&str>,
+        enabled: Option<bool>,
+    ) -> Result<Option<NotificationChannel>, DatabaseError> {
+        let existing = match self.get_by_id(project_id, channel_id).await? {
+            Some(c) => c,
+            None => return Ok(None),
+        };
+
+        let new_name = name.unwrap_or(&existing.name);
+        let new_config = encrypted_config.unwrap_or(&existing.encrypted_config);
+        let new_enabled = enabled.unwrap_or(existing.enabled);
+
+        let row = sqlx::query(
+            r#"
+            UPDATE notification_channels
+            SET name = $1, encrypted_config = $2, enabled = $3, updated_at = now()
+            WHERE id = $4 AND (project_id = $5 OR project_id IS NULL)
+            RETURNING id, organization_id, project_id, channel_type, name,
+                      encrypted_config, key_version, enabled, created_at, updated_at
+            "#,
+        )
+        .bind(new_name)
+        .bind(new_config)
+        .bind(new_enabled)
+        .bind(channel_id)
+        .bind(project_id)
+        .fetch_optional(self.pool)
+        .await?;
+
+        match row {
+            Some(r) => Ok(Some(map_notification_channel_row(&r)?)),
+            None => Ok(None),
+        }
+    }
+
+    pub async fn delete(&self, project_id: Uuid, channel_id: Uuid) -> Result<bool, DatabaseError> {
+        let result = sqlx::query(
+            r#"
+            DELETE FROM notification_channels
+            WHERE id = $1 AND (project_id = $2 OR project_id IS NULL)
+            "#,
+        )
+        .bind(channel_id)
+        .bind(project_id)
+        .execute(self.pool)
+        .await?;
+
+        Ok(result.rows_affected() > 0)
+    }
+}
+
+fn map_notification_channel_row(row: &PgRow) -> Result<NotificationChannel, DatabaseError> {
+    let type_str: String = row.get("channel_type");
+    let channel_type = NotificationChannelType::from_str(&type_str)
+        .map_err(|e| DatabaseError::NotFound(format!("Invalid channel type: {e}")))?;
+
+    Ok(NotificationChannel {
+        id: row.get("id"),
+        organization_id: row.get("organization_id"),
+        project_id: row.get("project_id"),
+        channel_type,
+        name: row.get("name"),
+        encrypted_config: row.get("encrypted_config"),
+        key_version: row.get("key_version"),
+        enabled: row.get("enabled"),
+        created_at: row.get("created_at"),
+        updated_at: row.get("updated_at"),
+    })
+}
+
+pub struct NotificationDeliveriesRepository<'a> {
+    pool: &'a PgPool,
+}
+
+impl<'a> NotificationDeliveriesRepository<'a> {
+    #[must_use]
+    pub fn new(pool: &'a PgPool) -> Self {
+        Self { pool }
+    }
+
+    pub async fn create_batch(&self, deliveries: &[(Uuid, Uuid)]) -> Result<usize, DatabaseError> {
+        if deliveries.is_empty() {
+            return Ok(0);
+        }
+
+        let mut count = 0;
+        for (event_id, channel_id) in deliveries {
+            sqlx::query(
+                r#"
+                INSERT INTO notification_deliveries (
+                    alert_event_id, channel_id, status, attempts, next_attempt_at
+                )
+                VALUES ($1, $2, 'pending', 0, now())
+                "#,
+            )
+            .bind(event_id)
+            .bind(channel_id)
+            .execute(self.pool)
+            .await?;
+            count += 1;
+        }
+
+        Ok(count)
+    }
+
+    pub async fn list_pending(
+        &self,
+        limit: i64,
+    ) -> Result<Vec<(NotificationDelivery, NotificationChannel, AlertEvent)>, DatabaseError> {
+        let rows = sqlx::query(
+            r#"
+            SELECT 
+                d.id as delivery_id, d.alert_event_id, d.channel_id, d.status as delivery_status,
+                d.attempts, d.next_attempt_at, d.last_error, d.provider_message_id,
+                d.created_at as delivery_created_at, d.delivered_at,
+                c.id as ch_id, c.organization_id as ch_org_id, c.project_id as ch_proj_id,
+                c.channel_type, c.name as ch_name, c.encrypted_config, c.key_version,
+                c.enabled as ch_enabled, c.created_at as ch_created_at, c.updated_at as ch_updated_at,
+                e.id as ev_id, e.organization_id as ev_org_id, e.project_id as ev_proj_id,
+                e.rule_id, e.fingerprint, e.status as ev_status, e.severity, e.summary,
+                e.details, e.first_triggered_at, e.last_triggered_at, e.resolved_at,
+                e.acknowledged_at, e.acknowledged_by, e.created_at as ev_created_at
+            FROM notification_deliveries d
+            JOIN notification_channels c ON c.id = d.channel_id
+            JOIN alert_events e ON e.id = d.alert_event_id
+            WHERE d.status = 'pending' AND d.next_attempt_at <= now()
+            ORDER BY d.created_at ASC
+            LIMIT $1
+            "#,
+        )
+        .bind(limit)
+        .fetch_all(self.pool)
+        .await?;
+
+        let mut out = Vec::with_capacity(rows.len());
+        for r in rows {
+            let deliv_status_str: String = r.get("delivery_status");
+            let deliv_status = NotificationDeliveryStatus::from_str(&deliv_status_str)
+                .map_err(|e| DatabaseError::NotFound(format!("Invalid delivery status: {e}")))?;
+
+            let delivery = NotificationDelivery {
+                id: r.get("delivery_id"),
+                alert_event_id: r.get("alert_event_id"),
+                channel_id: r.get("channel_id"),
+                status: deliv_status,
+                attempts: r.get("attempts"),
+                next_attempt_at: r.get("next_attempt_at"),
+                last_error: r.get("last_error"),
+                provider_message_id: r.get("provider_message_id"),
+                created_at: r.get("delivery_created_at"),
+                delivered_at: r.get("delivered_at"),
+            };
+
+            let ch_type_str: String = r.get("channel_type");
+            let channel_type = NotificationChannelType::from_str(&ch_type_str)
+                .map_err(|e| DatabaseError::NotFound(format!("Invalid channel type: {e}")))?;
+
+            let channel = NotificationChannel {
+                id: r.get("ch_id"),
+                organization_id: r.get("ch_org_id"),
+                project_id: r.get("ch_proj_id"),
+                channel_type,
+                name: r.get("ch_name"),
+                encrypted_config: r.get("encrypted_config"),
+                key_version: r.get("key_version"),
+                enabled: r.get("ch_enabled"),
+                created_at: r.get("ch_created_at"),
+                updated_at: r.get("ch_updated_at"),
+            };
+
+            let ev_status_str: String = r.get("ev_status");
+            let ev_status = AlertEventStatus::from_str(&ev_status_str)
+                .map_err(|e| DatabaseError::NotFound(format!("Invalid event status: {e}")))?;
+            let ev_sev_str: String = r.get("severity");
+            let ev_sev = AlertSeverity::from_str(&ev_sev_str)
+                .map_err(|e| DatabaseError::NotFound(format!("Invalid severity: {e}")))?;
+
+            let event = AlertEvent {
+                id: r.get("ev_id"),
+                organization_id: r.get("ev_org_id"),
+                project_id: r.get("ev_proj_id"),
+                rule_id: r.get("rule_id"),
+                fingerprint: r.get("fingerprint"),
+                status: ev_status,
+                severity: ev_sev,
+                summary: r.get("summary"),
+                details: r.get("details"),
+                first_triggered_at: r.get("first_triggered_at"),
+                last_triggered_at: r.get("last_triggered_at"),
+                resolved_at: r.get("resolved_at"),
+                acknowledged_at: r.get("acknowledged_at"),
+                acknowledged_by: r.get("acknowledged_by"),
+                created_at: r.get("ev_created_at"),
+            };
+
+            out.push((delivery, channel, event));
+        }
+
+        Ok(out)
+    }
+
+    pub async fn mark_delivered(
+        &self,
+        delivery_id: Uuid,
+        provider_message_id: Option<&str>,
+    ) -> Result<(), DatabaseError> {
+        sqlx::query(
+            r#"
+            UPDATE notification_deliveries
+            SET status = 'delivered', delivered_at = now(), provider_message_id = $1
+            WHERE id = $2
+            "#,
+        )
+        .bind(provider_message_id)
+        .bind(delivery_id)
+        .execute(self.pool)
+        .await?;
+
+        Ok(())
+    }
+
+    pub async fn mark_failed(
+        &self,
+        delivery_id: Uuid,
+        error: &str,
+        next_attempt_at: DateTime<Utc>,
+        attempts: i32,
+    ) -> Result<(), DatabaseError> {
+        let final_status = if attempts >= 5 { "failed" } else { "pending" };
+
+        sqlx::query(
+            r#"
+            UPDATE notification_deliveries
+            SET status = $1, last_error = $2, next_attempt_at = $3, attempts = $4
+            WHERE id = $5
+            "#,
+        )
+        .bind(final_status)
+        .bind(error)
+        .bind(next_attempt_at)
+        .bind(attempts)
+        .bind(delivery_id)
+        .execute(self.pool)
+        .await?;
+
+        Ok(())
+    }
+}
+
+pub struct AgentHealthRepository<'a> {
+    pool: &'a PgPool,
+}
+
+impl<'a> AgentHealthRepository<'a> {
+    #[must_use]
+    pub fn new(pool: &'a PgPool) -> Self {
+        Self { pool }
+    }
+
+    pub async fn compute_health(
+        &self,
+        project_id: Uuid,
+        agent_id: Uuid,
+        window: &str,
+    ) -> Result<AgentHealthReport, DatabaseError> {
+        let window_seconds: i64 = match window {
+            "1h" => 3600,
+            "7d" => 604_800,
+            _ => 86400, // default "24h"
+        };
+
+        // Query agent last_seen_at
+        let agent_row = sqlx::query(
+            r#"
+            SELECT last_seen_at
+            FROM agents
+            WHERE project_id = $1 AND id = $2
+            "#,
+        )
+        .bind(project_id)
+        .bind(agent_id)
+        .fetch_optional(self.pool)
+        .await?;
+
+        let last_seen_at: Option<DateTime<Utc>> = agent_row.and_then(|r| r.get("last_seen_at"));
+
+        // Determine freshness status
+        let now = Utc::now();
+        let freshness_status = match last_seen_at {
+            None => AgentHealthStatus::NeverSeen,
+            Some(last_seen) => {
+                let diff_secs = (now - last_seen).num_seconds();
+                if diff_secs <= 600 {
+                    AgentHealthStatus::Active
+                } else if diff_secs <= 7200 {
+                    AgentHealthStatus::Idle
+                } else {
+                    AgentHealthStatus::Stale
+                }
+            }
+        };
+
+        // Query trace metrics over window
+        let stats_row = sqlx::query(
+            r#"
+            SELECT 
+                COUNT(*)::BIGINT as total_count,
+                COUNT(*) FILTER (WHERE status = 'ok')::BIGINT as success_count,
+                COUNT(*) FILTER (WHERE status = 'error')::BIGINT as error_count,
+                COUNT(*) FILTER (WHERE status = 'timeout' OR error_type ILIKE '%timeout%')::BIGINT as timeout_count,
+                percentile_cont(0.50) WITHIN GROUP (ORDER BY duration_ms) as p50_duration,
+                percentile_cont(0.95) WITHIN GROUP (ORDER BY duration_ms) as p95_duration
+            FROM traces
+            WHERE project_id = $1 AND agent_id = $2
+              AND started_at >= now() - ($3 || ' seconds')::INTERVAL
+            "#,
+        )
+        .bind(project_id)
+        .bind(agent_id)
+        .bind(window_seconds)
+        .fetch_one(self.pool)
+        .await?;
+
+        let total_count: i64 = stats_row.get("total_count");
+        let success_count: i64 = stats_row.get("success_count");
+        let error_count: i64 = stats_row.get("error_count");
+        let timeout_count: i64 = stats_row.get("timeout_count");
+        let p50_duration: Option<f64> = stats_row.get("p50_duration");
+        let p95_duration: Option<f64> = stats_row.get("p95_duration");
+
+        let (success_rate, error_rate, timeout_rate) = if total_count > 0 {
+            let tc = total_count as f64;
+            (
+                (success_count as f64 / tc * 1000.0).round() / 1000.0,
+                (error_count as f64 / tc * 1000.0).round() / 1000.0,
+                (timeout_count as f64 / tc * 1000.0).round() / 1000.0,
+            )
+        } else {
+            (0.0, 0.0, 0.0)
+        };
+
+        let evaluated_thresholds = serde_json::json!({
+            "error_rate_threshold": 0.05,
+            "p95_latency_threshold_ms": 3000,
+            "inactivity_threshold_seconds": 3600
+        });
+
+        let status_explanation = if total_count == 0 {
+            match freshness_status {
+                AgentHealthStatus::NeverSeen => {
+                    "No telemetry has ever been recorded for this agent.".to_string()
+                }
+                _ => format!(
+                    "No traces executed within the requested {window} window. Freshness: {:?}.",
+                    freshness_status
+                ),
+            }
+        } else {
+            format!(
+                "Executed {total_count} traces with {:.1}% success rate and {:.1}% error rate. P95 latency is {}ms.",
+                success_rate * 100.0,
+                error_rate * 100.0,
+                p95_duration.map_or("N/A".to_string(), |v| format!("{v:.0}"))
+            )
+        };
+
+        Ok(AgentHealthReport {
+            agent_id,
+            window: window.to_string(),
+            last_seen_at,
+            freshness_status,
+            execution_count: total_count,
+            success_rate,
+            error_rate,
+            timeout_rate,
+            p50_latency_ms: p50_duration,
+            p95_latency_ms: p95_duration,
+            status_explanation,
+            evaluated_thresholds,
         })
     }
 }

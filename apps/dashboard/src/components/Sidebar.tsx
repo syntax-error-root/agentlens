@@ -19,6 +19,7 @@ const NAV_ITEMS = [
   { name: "Traces", href: "/traces", icon: Activity },
   { name: "Agents", href: "/agents", icon: Bot },
   { name: "Sessions", href: "/sessions", icon: MessagesSquare },
+  { name: "Alerts", href: "/alerts", icon: ShieldAlert },
 ];
 
 const SETTINGS_ITEMS = [

@@ -3,13 +3,16 @@
 //! `agentlens-jobs` crate.
 //! Durable transactional outbox processor, exponential backoff, and trace finalization.
 
+use agentlens_alerts::AlertEngine;
 use agentlens_database::{
-    DailyMetricsRepository, DatabaseError, DbPool, ModelPricingRepository, OutboxRepository,
-    TokenUsagesRepository, TracesRepository,
+    AlertRulesRepository, DailyMetricsRepository, DatabaseError, DbPool, ModelPricingRepository,
+    NotificationDeliveriesRepository, OutboxRepository, TokenUsagesRepository, TracesRepository,
 };
 use agentlens_domain::{OutboxJob, TraceId, TraceStatus};
+use agentlens_notifications::{deliver_notification, NotificationPayload};
 use agentlens_observability::ObservabilityRegistry;
 use agentlens_pricing::ModelPricingEngine;
+use chrono::Utc;
 use rand::Rng;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
@@ -309,6 +312,97 @@ impl OutboxWorker {
         }
 
         info!(worker = %self.config.worker_id, "Outbox worker loop terminated cleanly");
+    }
+}
+
+pub struct AlertEvaluatorRunner {
+    pool: DbPool,
+}
+
+impl AlertEvaluatorRunner {
+    #[must_use]
+    pub fn new(pool: DbPool) -> Self {
+        Self { pool }
+    }
+
+    pub async fn run_evaluation_pass(&self) -> Result<usize, JobError> {
+        let rules_repo = AlertRulesRepository::new(&self.pool);
+        let rules = rules_repo.list_all_enabled().await?;
+        let engine = AlertEngine::new(&self.pool);
+        let mut processed = 0;
+
+        for rule in rules {
+            match engine.evaluate_rule(&rule).await {
+                Ok(Some(outcome)) => {
+                    if let Err(e) = engine.process_evaluation(&rule, &outcome).await {
+                        error!(rule_id = %rule.id, err = %e, "Failed to process alert evaluation outcome");
+                    } else {
+                        processed += 1;
+                    }
+                }
+                Ok(None) => {}
+                Err(e) => {
+                    error!(rule_id = %rule.id, err = %e, "Failed to evaluate alert rule");
+                }
+            }
+        }
+
+        Ok(processed)
+    }
+}
+
+pub struct NotificationDeliveryRunner {
+    pool: DbPool,
+}
+
+impl NotificationDeliveryRunner {
+    #[must_use]
+    pub fn new(pool: DbPool) -> Self {
+        Self { pool }
+    }
+
+    pub async fn run_delivery_pass(
+        &self,
+        encryption_key: &[u8],
+        allow_loopback: bool,
+    ) -> Result<usize, JobError> {
+        let deliveries_repo = NotificationDeliveriesRepository::new(&self.pool);
+        let pending = deliveries_repo.list_pending(10).await?;
+        let count = pending.len();
+
+        for (delivery, channel, event) in pending {
+            let payload = NotificationPayload {
+                event_id: event.id,
+                rule_id: event.rule_id,
+                rule_name: format!("Alert {}", event.severity.as_str()),
+                severity: event.severity.as_str().to_string(),
+                status: event.status,
+                summary: event.summary,
+                details: event.details,
+                triggered_at: event.last_triggered_at,
+                project_name: None,
+            };
+
+            match deliver_notification(&channel, encryption_key, &payload, allow_loopback).await {
+                Ok(msg_id) => {
+                    let _ = deliveries_repo
+                        .mark_delivered(delivery.id, msg_id.as_deref())
+                        .await;
+                }
+                Err(err) => {
+                    let attempts = delivery.attempts + 1;
+                    let backoff = compute_backoff(attempts);
+                    let next_attempt = Utc::now()
+                        + chrono::Duration::from_std(backoff)
+                            .unwrap_or_else(|_| chrono::Duration::seconds(60));
+                    let _ = deliveries_repo
+                        .mark_failed(delivery.id, &err.to_string(), next_attempt, attempts)
+                        .await;
+                }
+            }
+        }
+
+        Ok(count)
     }
 }
 

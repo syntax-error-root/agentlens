@@ -4,7 +4,7 @@ import { useEffect, useState, useCallback } from "react";
 import Link from "next/link";
 import { useParams } from "next/navigation";
 import { api } from "@/lib/api";
-import { Agent, AgentVersion, Trace } from "@/types";
+import { Agent, AgentHealthReport, AgentVersion, Trace } from "@/types";
 import {
   AlertCircle,
   ArrowLeft,
@@ -21,6 +21,8 @@ export default function AgentDetailPage() {
   const agentId = params.id as string;
 
   const [agent, setAgent] = useState<Agent | null>(null);
+  const [health, setHealth] = useState<AgentHealthReport | null>(null);
+  const [healthWindow, setHealthWindow] = useState<"1h" | "24h" | "7d">("24h");
   const [versions, setVersions] = useState<AgentVersion[]>([]);
   const [traces, setTraces] = useState<Trace[]>([]);
   const [loading, setLoading] = useState(true);
@@ -33,21 +35,23 @@ export default function AgentDetailPage() {
     setError(null);
 
     try {
-      const [agentData, versionsData, tracesData] = await Promise.all([
+      const [agentData, versionsData, tracesData, healthData] = await Promise.all([
         api.agents.get(agentId),
         api.agents.listVersions(agentId),
         api.agents.listTraces(agentId),
+        api.agents.getHealth(agentId, healthWindow),
       ]);
 
       setAgent(agentData);
       setVersions(versionsData);
       setTraces(tracesData);
+      setHealth(healthData);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to load agent");
     } finally {
       setLoading(false);
     }
-  }, [agentId]);
+  }, [agentId, healthWindow]);
 
   useEffect(() => {
     loadData();
@@ -141,6 +145,96 @@ export default function AgentDetailPage() {
           </div>
         </div>
       </div>
+
+      {/* Transparent Health Indicators Card */}
+      {health && (
+        <div className="p-5 rounded-xl border border-neutral-850 bg-neutral-900/40 space-y-4">
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+            <div className="flex items-center gap-2.5">
+              <span className="text-xs font-semibold text-neutral-200">Health Indicators</span>
+              <span
+                className={`px-2 py-0.5 text-[10px] font-mono rounded-full uppercase tracking-wider font-bold ${
+                  health.freshness_status === "active"
+                    ? "bg-emerald-500/10 text-emerald-400 border border-emerald-500/30"
+                    : health.freshness_status === "idle"
+                    ? "bg-yellow-500/10 text-yellow-400 border border-yellow-500/30"
+                    : health.freshness_status === "stale"
+                    ? "bg-amber-500/10 text-amber-400 border border-amber-500/30"
+                    : "bg-neutral-800 text-neutral-400 border border-neutral-700"
+                }`}
+              >
+                {health.freshness_status}
+              </span>
+            </div>
+
+            <div className="flex items-center gap-1 bg-neutral-950 p-0.5 rounded-lg border border-neutral-800 text-[11px]">
+              {(["1h", "24h", "7d"] as const).map((w) => (
+                <button
+                  key={w}
+                  onClick={() => setHealthWindow(w)}
+                  className={`px-2 py-0.5 rounded font-mono transition-colors ${
+                    healthWindow === w
+                      ? "bg-neutral-800 text-neutral-100 font-semibold"
+                      : "text-neutral-400 hover:text-neutral-200"
+                  }`}
+                >
+                  {w}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3">
+            <div className="p-3 rounded-lg bg-neutral-950 border border-neutral-850">
+              <div className="text-[11px] text-neutral-400 font-mono">Executions</div>
+              <div className="text-lg font-bold text-neutral-100 font-mono mt-0.5">
+                {health.execution_count.toLocaleString()}
+              </div>
+            </div>
+            <div className="p-3 rounded-lg bg-neutral-950 border border-neutral-850">
+              <div className="text-[11px] text-neutral-400 font-mono">Success Rate</div>
+              <div className="text-lg font-bold text-emerald-400 font-mono mt-0.5">
+                {health.execution_count > 0 ? `${(health.success_rate * 100).toFixed(1)}%` : "—"}
+              </div>
+            </div>
+            <div className="p-3 rounded-lg bg-neutral-950 border border-neutral-850">
+              <div className="text-[11px] text-neutral-400 font-mono">Error Rate</div>
+              <div
+                className={`text-lg font-bold font-mono mt-0.5 ${
+                  health.error_rate > 0.05 ? "text-red-400" : "text-neutral-200"
+                }`}
+              >
+                {health.execution_count > 0 ? `${(health.error_rate * 100).toFixed(1)}%` : "—"}
+              </div>
+            </div>
+            <div className="p-3 rounded-lg bg-neutral-950 border border-neutral-850">
+              <div className="text-[11px] text-neutral-400 font-mono">Timeout Rate</div>
+              <div className="text-lg font-bold text-neutral-200 font-mono mt-0.5">
+                {health.execution_count > 0 ? `${(health.timeout_rate * 100).toFixed(1)}%` : "—"}
+              </div>
+            </div>
+            <div className="p-3 rounded-lg bg-neutral-950 border border-neutral-850">
+              <div className="text-[11px] text-neutral-400 font-mono">P50 Latency</div>
+              <div className="text-lg font-bold text-neutral-200 font-mono mt-0.5">
+                {formatDuration(health.p50_latency_ms)}
+              </div>
+            </div>
+            <div className="p-3 rounded-lg bg-neutral-950 border border-neutral-850">
+              <div className="text-[11px] text-neutral-400 font-mono">P95 Latency</div>
+              <div className="text-lg font-bold text-neutral-200 font-mono mt-0.5">
+                {formatDuration(health.p95_latency_ms)}
+              </div>
+            </div>
+          </div>
+
+          <div className="p-3 rounded-lg bg-neutral-950/60 border border-neutral-850 text-xs text-neutral-300">
+            <span className="font-semibold text-neutral-400 font-mono text-[11px] uppercase mr-2">
+              Status Explanation:
+            </span>
+            {health.status_explanation}
+          </div>
+        </div>
+      )}
 
       {/* Tabs */}
       <div className="border-b border-neutral-850 flex gap-4 text-xs">
