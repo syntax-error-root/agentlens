@@ -1,0 +1,63 @@
+[project]
+name = "agentlens"
+version = "0.1.0"
+description = "AgentLens Python SDK for AI Agent Observability"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "opentelemetry-api>=1.25.0",
+    "opentelemetry-exporter-otlp-proto-http>=1.25.0",
+    "opentelemetry-sdk>=1.25.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0.0",
+    "ruff>=0.8.0",
+    "mypy>=1.13.0"
+]
+langgraph = [
+    "langchain-core>=0.2.0",
+]
+litellm = [
+    "litellm>=1.40.0",
+]
+crewai = [
+    "crewai>=0.50.0",
+]
+openai-agents = [
+    "openai>=1.40.0",
+]
+mcp = [
+    "mcp>=1.0.0",
+]
+all-integrations = [
+    "langchain-core>=0.2.0",
+    "litellm>=1.40.0",
+    "crewai>=0.50.0",
+    "openai>=1.40.0",
+    "mcp>=1.0.0",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+
+[tool.ruff.lint]
+ignore = ["BLE001"]
+
+[tool.mypy]
+python_version = "3.10"
+strict = true
+warn_unused_configs = true
+
+[dependency-groups]
+dev = [
+    "mypy>=2.4.1",
+    "pytest>=9.2.0",
+    "ruff>=0.17.4",
+]

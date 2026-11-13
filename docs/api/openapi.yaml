@@ -1,0 +1,1073 @@
+openapi: 3.1.0
+info:
+  title: AgentLens Control Plane API
+  version: 0.1.0
+  description: Control plane authentication, RBAC, tenant isolation, and scoped ingestion key management.
+servers:
+  - url: http://localhost:8080
+    description: Local development API server
+paths:
+  /health/live:
+    get:
+      summary: Liveness probe
+      responses:
+        '200':
+          description: Service is alive
+  /health/ready:
+    get:
+      summary: Readiness probe
+      responses:
+        '200':
+          description: Service is ready and database is connected
+        '503':
+          description: Service is unavailable or database is disconnected
+
+  /v1/traces:
+    post:
+      summary: OpenTelemetry OTLP trace receiver
+      description: Ingests OTLP traces (protobuf or JSON, optionally gzip-compressed). Authenticates via project-scoped API key.
+      security:
+        - IngestionApiKey: []
+      requestBody:
+        required: true
+        content:
+          application/x-protobuf:
+            schema:
+              type: string
+              format: binary
+          application/json:
+            schema:
+              type: object
+      responses:
+        '200':
+          description: Traces, spans, events, links, token usages, and outbox job persisted atomically
+          content:
+            application/x-protobuf:
+              schema:
+                type: string
+                format: binary
+            application/json:
+              schema:
+                type: object
+        '400':
+          description: Malformed protobuf or JSON payload
+        '401':
+          description: Invalid, revoked, or expired ingestion API key
+        '413':
+          description: Decompressed payload exceeds 16 MiB size limit
+
+  /api/v1/auth/bootstrap:
+    post:
+      summary: First-owner atomic bootstrap
+      description: Acquires PostgreSQL advisory transaction lock. Only succeeds when zero users exist.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [email, password, organization_name, organization_slug]
+              properties:
+                email: { type: string, format: email }
+                password: { type: string, minLength: 8 }
+                organization_name: { type: string }
+                organization_slug: { type: string }
+                default_project_name: { type: string }
+      responses:
+        '201':
+          description: Initial user, organization, project, and default environments created
+        '400':
+          description: Validation error
+        '403':
+          description: Bootstrap already completed (permanently locked)
+
+  /api/v1/auth/login:
+    post:
+      summary: Authenticate local user credentials
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [email, password]
+              properties:
+                email: { type: string, format: email }
+                password: { type: string }
+      responses:
+        '200':
+          description: Login successful; session cookie set
+        '401':
+          description: Invalid email or password
+
+  /api/v1/auth/logout:
+    post:
+      summary: Invalidate user session cookie
+      responses:
+        '200':
+          description: Session cleared
+
+  /api/v1/auth/me:
+    get:
+      summary: Get current authenticated user profile and organization memberships
+      responses:
+        '200':
+          description: Current user profile and memberships
+        '401':
+          description: Unauthenticated
+
+  /api/v1/auth/oidc/start:
+    get:
+      summary: Initialize OIDC authorization code flow with PKCE
+      responses:
+        '200':
+          description: Authorization URL and PKCE verifier/state
+
+  /api/v1/auth/oidc/callback:
+    post:
+      summary: OIDC callback exchange
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [code, nonce, code_verifier]
+              properties:
+                code: { type: string }
+                nonce: { type: string }
+                code_verifier: { type: string }
+      responses:
+        '200':
+          description: User session created
+
+  /api/v1/organizations:
+    get:
+      summary: List organizations for authenticated user
+      responses:
+        '200':
+          description: List of organizations
+    post:
+      summary: Create a new organization (caller becomes owner)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name, slug]
+              properties:
+                name: { type: string }
+                slug: { type: string }
+      responses:
+        '201':
+          description: Organization created
+
+  /api/v1/organizations/{org_id}:
+    get:
+      summary: Get organization details
+      parameters:
+        - name: org_id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        '200':
+          description: Organization details
+        '403':
+          description: Not a member of this organization
+    patch:
+      summary: Update organization name (owner only)
+      parameters:
+        - name: org_id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name]
+              properties:
+                name: { type: string }
+      responses:
+        '200':
+          description: Organization updated
+        '403':
+          description: Owner role required
+
+  /api/v1/organizations/{org_id}/members:
+    get:
+      summary: List members in organization
+      parameters:
+        - name: org_id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        '200':
+          description: List of members with roles
+    post:
+      summary: Add member to organization (owner only)
+      parameters:
+        - name: org_id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [user_id, role]
+              properties:
+                user_id: { type: string, format: uuid }
+                role: { type: string, enum: [owner, admin, member, viewer] }
+      responses:
+        '201':
+          description: Member added
+
+  /api/v1/organizations/{org_id}/members/{user_id}:
+    patch:
+      summary: Update member role (owner only)
+      parameters:
+        - name: org_id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+        - name: user_id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [role]
+              properties:
+                role: { type: string, enum: [owner, admin, member, viewer] }
+      responses:
+        '200':
+          description: Member role updated
+    delete:
+      summary: Remove member from organization (owner only)
+      parameters:
+        - name: org_id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+        - name: user_id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        '200':
+          description: Member removed
+
+  /api/v1/projects:
+    get:
+      summary: List projects for an organization
+      parameters:
+        - name: organization_id
+          in: query
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        '200':
+          description: List of projects
+    post:
+      summary: Create project and default environments (admin or owner)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [organization_id, name, slug]
+              properties:
+                organization_id: { type: string, format: uuid }
+                name: { type: string }
+                slug: { type: string }
+                description: { type: string }
+      responses:
+        '201':
+          description: Project and environments created
+
+  /api/v1/projects/{project_id}:
+    get:
+      summary: Get project details
+      parameters:
+        - name: project_id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        '200':
+          description: Project details
+    patch:
+      summary: Update project settings (admin or owner)
+      parameters:
+        - name: project_id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name, retention_days]
+              properties:
+                name: { type: string }
+                description: { type: string }
+                retention_days: { type: integer, minimum: 1 }
+      responses:
+        '200':
+          description: Project updated
+
+  /api/v1/projects/{project_id}/environments:
+    get:
+      summary: List environments in project
+      parameters:
+        - name: project_id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        '200':
+          description: List of environments
+
+  /api/v1/projects/{project_id}/api-keys:
+    get:
+      summary: List API keys for project (metadata only, no secrets or raw hashes)
+      parameters:
+        - name: project_id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        '200':
+          description: List of API keys metadata
+    post:
+      summary: Create scoped ingestion API key (secret returned exactly once)
+      parameters:
+        - name: project_id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [environment_id, name]
+              properties:
+                environment_id: { type: string, format: uuid }
+                name: { type: string }
+                scopes:
+                  type: array
+                  items: { type: string }
+                expires_in_days: { type: integer, minimum: 1 }
+      responses:
+        '201':
+          description: Key created with full plaintext secret returned once
+
+  /api/v1/api-keys/{key_id}/rotate:
+    post:
+      summary: Rotate API key (revokes old, creates new, returns plaintext secret once)
+      parameters:
+        - name: key_id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        '201':
+          description: Rotated key returned with new plaintext secret
+
+  /api/v1/api-keys/{key_id}:
+    delete:
+      summary: Revoke API key immediately
+      parameters:
+        - name: key_id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        '200':
+          description: Key revoked
+
+  /api/v1/auth/bootstrap/status:
+    get:
+      summary: Check if initial instance bootstrap is available
+      responses:
+        '200':
+          description: Bootstrap availability status
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [can_bootstrap]
+                properties:
+                  can_bootstrap: { type: boolean }
+
+  /api/v1/projects/{project_id}/overview:
+    get:
+      summary: Retrieve project metrics summary
+      parameters:
+        - name: project_id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+        - name: environment_id
+          in: query
+          required: false
+          schema: { type: string, format: uuid }
+        - name: from
+          in: query
+          required: false
+          schema: { type: string, format: date-time }
+        - name: to
+          in: query
+          required: false
+          schema: { type: string, format: date-time }
+      responses:
+        '200':
+          description: Aggregated project overview metrics
+
+  /api/v1/projects/{project_id}/agents:
+    get:
+      summary: List registered agents in project
+      parameters:
+        - name: project_id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        '200':
+          description: List of agents
+    post:
+      summary: Create or register an agent
+      parameters:
+        - name: project_id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name]
+              properties:
+                name: { type: string }
+                framework: { type: string }
+                language: { type: string }
+                description: { type: string }
+                metadata: { type: object }
+      responses:
+        '201':
+          description: Created agent
+
+  /api/v1/agents/{agent_id}:
+    get:
+      summary: Get agent by id
+      parameters:
+        - name: agent_id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        '200':
+          description: Agent details
+    patch:
+      summary: Update agent metadata
+      parameters:
+        - name: agent_id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                framework: { type: string }
+                language: { type: string }
+                description: { type: string }
+                metadata: { type: object }
+      responses:
+        '200':
+          description: Updated agent
+
+  /api/v1/agents/{agent_id}/versions:
+    get:
+      summary: List agent versions
+      parameters:
+        - name: agent_id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        '200':
+          description: List of agent versions
+
+  /api/v1/agents/{agent_id}/traces:
+    get:
+      summary: List traces for agent
+      parameters:
+        - name: agent_id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+        - name: limit
+          in: query
+          required: false
+          schema: { type: integer, default: 50 }
+      responses:
+        '200':
+          description: List of traces
+
+  /api/v1/traces:
+    get:
+      summary: Keyset paginated trace query
+      parameters:
+        - name: project_id
+          in: query
+          required: true
+          schema: { type: string, format: uuid }
+        - name: environment_id
+          in: query
+          required: false
+          schema: { type: string, format: uuid }
+        - name: agent_id
+          in: query
+          required: false
+          schema: { type: string, format: uuid }
+        - name: status
+          in: query
+          required: false
+          schema: { type: string }
+        - name: provider
+          in: query
+          required: false
+          schema: { type: string }
+        - name: model
+          in: query
+          required: false
+          schema: { type: string }
+        - name: span_type
+          in: query
+          required: false
+          schema: { type: string }
+        - name: min_duration_ms
+          in: query
+          required: false
+          schema: { type: integer }
+        - name: max_duration_ms
+          in: query
+          required: false
+          schema: { type: integer }
+        - name: from
+          in: query
+          required: false
+          schema: { type: string, format: date-time }
+        - name: to
+          in: query
+          required: false
+          schema: { type: string, format: date-time }
+        - name: search_trace_id
+          in: query
+          required: false
+          schema: { type: string }
+        - name: cursor
+          in: query
+          required: false
+          schema: { type: string }
+        - name: limit
+          in: query
+          required: false
+          schema: { type: integer, default: 50 }
+      responses:
+        '200':
+          description: Keyset paginated trace result
+
+  /api/v1/traces/{trace_record_id}:
+    get:
+      summary: Get trace by UUID or 32-hex trace ID
+      parameters:
+        - name: trace_record_id
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        '200':
+          description: Trace record
+
+  /api/v1/traces/{trace_record_id}/spans:
+    get:
+      summary: List all spans for a trace
+      parameters:
+        - name: trace_record_id
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        '200':
+          description: Ordered list of spans for waterfall visualization
+
+  /api/v1/spans/{span_record_id}:
+    get:
+      summary: Get span detail including events, links, and token usage
+      parameters:
+        - name: span_record_id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        '200':
+          description: Span detail
+
+  /api/v1/sessions:
+    get:
+      summary: List sessions in project
+      parameters:
+        - name: project_id
+          in: query
+          required: true
+          schema: { type: string, format: uuid }
+        - name: limit
+          in: query
+          required: false
+          schema: { type: integer, default: 50 }
+      responses:
+        '200':
+          description: List of sessions
+
+  /api/v1/sessions/{session_id}:
+    get:
+      summary: Get session by ID
+      parameters:
+        - name: session_id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        '200':
+          description: Session record
+
+  /api/v1/sessions/{session_id}/traces:
+    get:
+      summary: List traces belonging to a session
+      parameters:
+        - name: session_id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+        - name: limit
+          in: query
+          required: false
+          schema: { type: integer, default: 50 }
+      responses:
+        '200':
+          description: List of session traces
+
+  /api/v1/analytics/overview:
+    get:
+      summary: Get aggregated project overview analytics
+      parameters:
+        - name: project_id
+          in: query
+          required: true
+          schema: { type: string, format: uuid }
+        - name: environment_id
+          in: query
+          required: false
+          schema: { type: string, format: uuid }
+        - name: from
+          in: query
+          required: false
+          schema: { type: string, format: date-time }
+        - name: to
+          in: query
+          required: false
+          schema: { type: string, format: date-time }
+      responses:
+        '200':
+          description: Overview analytics summary
+
+  /api/v1/analytics/tokens:
+    get:
+      summary: Get token usage time-series and breakdown
+      parameters:
+        - name: project_id
+          in: query
+          required: true
+          schema: { type: string, format: uuid }
+        - name: environment_id
+          in: query
+          required: false
+          schema: { type: string, format: uuid }
+        - name: from
+          in: query
+          required: false
+          schema: { type: string, format: date-time }
+        - name: to
+          in: query
+          required: false
+          schema: { type: string, format: date-time }
+      responses:
+        '200':
+          description: Token analytics result
+
+  /api/v1/analytics/costs:
+    get:
+      summary: Get cost time-series and unpriced usage counts
+      parameters:
+        - name: project_id
+          in: query
+          required: true
+          schema: { type: string, format: uuid }
+        - name: environment_id
+          in: query
+          required: false
+          schema: { type: string, format: uuid }
+        - name: from
+          in: query
+          required: false
+          schema: { type: string, format: date-time }
+        - name: to
+          in: query
+          required: false
+          schema: { type: string, format: date-time }
+      responses:
+        '200':
+          description: Cost analytics result
+
+  /api/v1/analytics/models:
+    get:
+      summary: Get model-level token usage and estimated cost breakdown
+      parameters:
+        - name: project_id
+          in: query
+          required: true
+          schema: { type: string, format: uuid }
+        - name: from
+          in: query
+          required: false
+          schema: { type: string, format: date-time }
+        - name: to
+          in: query
+          required: false
+          schema: { type: string, format: date-time }
+      responses:
+        '200':
+          description: List of model usage items
+
+  /api/v1/analytics/agents:
+    get:
+      summary: Get agent-level usage, errors, and latency percentiles
+      parameters:
+        - name: project_id
+          in: query
+          required: true
+          schema: { type: string, format: uuid }
+        - name: environment_id
+          in: query
+          required: false
+          schema: { type: string, format: uuid }
+        - name: from
+          in: query
+          required: false
+          schema: { type: string, format: date-time }
+        - name: to
+          in: query
+          required: false
+          schema: { type: string, format: date-time }
+      responses:
+        '200':
+          description: List of agent analytics items
+
+  /api/v1/analytics/tools:
+    get:
+      summary: Get tool performance and latency percentiles
+      parameters:
+        - name: project_id
+          in: query
+          required: true
+          schema: { type: string, format: uuid }
+        - name: from
+          in: query
+          required: false
+          schema: { type: string, format: date-time }
+        - name: to
+          in: query
+          required: false
+          schema: { type: string, format: date-time }
+      responses:
+        '200':
+          description: List of tool performance items
+
+  /api/v1/analytics/latency:
+    get:
+      summary: Get continuous latency percentiles (P50, P95, P99)
+      parameters:
+        - name: project_id
+          in: query
+          required: true
+          schema: { type: string, format: uuid }
+        - name: environment_id
+          in: query
+          required: false
+          schema: { type: string, format: uuid }
+        - name: from
+          in: query
+          required: false
+          schema: { type: string, format: date-time }
+        - name: to
+          in: query
+          required: false
+          schema: { type: string, format: date-time }
+      responses:
+        '200':
+          description: Continuous latency percentiles
+
+  /api/v1/analytics/errors:
+    get:
+      summary: Get error breakdown, rate time-series, and top errors
+      parameters:
+        - name: project_id
+          in: query
+          required: true
+          schema: { type: string, format: uuid }
+        - name: environment_id
+          in: query
+          required: false
+          schema: { type: string, format: uuid }
+        - name: from
+          in: query
+          required: false
+          schema: { type: string, format: date-time }
+        - name: to
+          in: query
+          required: false
+          schema: { type: string, format: date-time }
+      responses:
+        '200':
+          description: Error analytics summary and time-series
+
+  /api/v1/pricing:
+    get:
+      summary: List all versioned model pricing rate cards
+      responses:
+        '200':
+          description: List of pricing rate cards
+    post:
+      summary: Create a custom model pricing rate card
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [provider, model_pattern, match_type, effective_from, version]
+      responses:
+        '201':
+          description: Created pricing rate card
+
+  /api/v1/agents/{agent_id}/health:
+    get:
+      summary: Get transparent agent health indicators over a time window
+      parameters:
+        - name: agent_id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+        - name: window
+          in: query
+          required: false
+          schema: { type: string, enum: [1h, 24h, 7d], default: 24h }
+      responses:
+        '200':
+          description: Transparent agent health report
+
+  /api/v1/projects/{project_id}/alert-rules:
+    get:
+      summary: List all alert rules for a project
+      parameters:
+        - name: project_id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        '200':
+          description: List of alert rules
+    post:
+      summary: Create an alert rule for a project
+      parameters:
+        - name: project_id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name, metric, operator, threshold, window_seconds]
+      responses:
+        '201':
+          description: Created alert rule
+
+  /api/v1/alert-rules/{rule_id}:
+    get:
+      summary: Get an alert rule by ID
+      parameters:
+        - name: rule_id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        '200':
+          description: Alert rule details
+    patch:
+      summary: Update an alert rule
+      parameters:
+        - name: rule_id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        '200':
+          description: Updated alert rule
+    delete:
+      summary: Delete an alert rule
+      parameters:
+        - name: rule_id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        '204':
+          description: Alert rule deleted
+
+  /api/v1/projects/{project_id}/alert-events:
+    get:
+      summary: List alert events history for a project
+      parameters:
+        - name: project_id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+        - name: status
+          in: query
+          required: false
+          schema: { type: string, enum: [firing, acknowledged, resolved] }
+        - name: limit
+          in: query
+          required: false
+          schema: { type: integer, default: 50 }
+        - name: offset
+          in: query
+          required: false
+          schema: { type: integer, default: 0 }
+      responses:
+        '200':
+          description: List of alert events
+
+  /api/v1/alert-events/{event_id}:
+    get:
+      summary: Get alert event by ID
+      parameters:
+        - name: event_id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        '200':
+          description: Alert event details
+
+  /api/v1/alert-events/{event_id}/acknowledge:
+    post:
+      summary: Acknowledge an active firing alert event
+      parameters:
+        - name: event_id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        '200':
+          description: Acknowledged alert event
+
+  /api/v1/projects/{project_id}/notification-channels:
+    get:
+      summary: List notification channels with masked secrets for a project
+      parameters:
+        - name: project_id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        '200':
+          description: List of notification channels
+    post:
+      summary: Create an encrypted notification channel for a project
+      parameters:
+        - name: project_id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [channel_type, name, config]
+      responses:
+        '201':
+          description: Created notification channel
+
+  /api/v1/notification-channels/{channel_id}:
+    get:
+      summary: Get notification channel details with masked credentials
+      parameters:
+        - name: channel_id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        '200':
+          description: Notification channel
+    delete:
+      summary: Delete notification channel
+      parameters:
+        - name: channel_id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        '204':
+          description: Notification channel deleted
+
+  /api/v1/notification-channels/{channel_id}/test:
+    post:
+      summary: Dispatch a test notification with SSRF defense verification
+      parameters:
+        - name: channel_id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        '200':
+          description: Test notification dispatched successfully

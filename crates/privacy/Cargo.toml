@@ -1,0 +1,15 @@
+[package]
+name = "agentlens-privacy"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+
+[dependencies]
+agentlens-domain = { workspace = true }
+agentlens-config = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+regex = { workspace = true }
+thiserror = { workspace = true }

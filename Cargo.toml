@@ -1,0 +1,86 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/domain",
+    "crates/config",
+    "crates/observability",
+    "crates/privacy",
+    "crates/pricing",
+    "crates/telemetry",
+    "crates/database",
+    "crates/storage",
+    "crates/auth",
+    "crates/notifications",
+    "crates/organizations",
+    "crates/projects",
+    "crates/agents",
+    "crates/traces",
+    "crates/analytics",
+    "crates/alerts",
+    "crates/jobs",
+    "crates/app",
+    "crates/api",
+    "binaries/api",
+    "binaries/worker",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+authors = ["AgentLens Contributors"]
+license = "Apache-2.0"
+repository = "https://github.com/syntax-error-root/agentlens"
+
+[workspace.dependencies]
+agentlens-domain = { path = "crates/domain" }
+agentlens-config = { path = "crates/config" }
+agentlens-observability = { path = "crates/observability" }
+agentlens-privacy = { path = "crates/privacy" }
+agentlens-pricing = { path = "crates/pricing" }
+agentlens-telemetry = { path = "crates/telemetry" }
+agentlens-database = { path = "crates/database" }
+agentlens-storage = { path = "crates/storage" }
+agentlens-auth = { path = "crates/auth" }
+agentlens-notifications = { path = "crates/notifications" }
+agentlens-organizations = { path = "crates/organizations" }
+agentlens-projects = { path = "crates/projects" }
+agentlens-agents = { path = "crates/agents" }
+agentlens-traces = { path = "crates/traces" }
+agentlens-analytics = { path = "crates/analytics" }
+agentlens-alerts = { path = "crates/alerts" }
+agentlens-jobs = { path = "crates/jobs" }
+agentlens-app = { path = "crates/app" }
+agentlens-api = { path = "crates/api" }
+
+tokio = { version = "1.43", features = ["full"] }
+axum = { version = "0.8", features = ["macros"] }
+tower = { version = "0.5", features = ["util"] }
+tower-http = { version = "0.6", features = ["trace", "cors"] }
+
+sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio-rustls", "postgres", "macros", "uuid", "chrono", "migrate", "rust_decimal"] }
+
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+uuid = { version = "1.11", features = ["v4", "serde"] }
+chrono = { version = "0.4", features = ["serde"] }
+rust_decimal = { version = "1.36", features = ["serde-float"] }
+thiserror = "2.0"
+anyhow = "1.0"
+
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
+
+argon2 = "0.5"
+subtle = "2.6"
+sha2 = "0.10"
+rand = "0.8"
+hmac = "0.12"
+hex = "0.4"
+async-trait = "0.1"
+flate2 = "1.0"
+regex = "1.11"
+prost = "0.13"
+opentelemetry-proto = { version = "0.27", features = ["trace", "with-serde"] }
+aes-gcm = "0.10"
+base64 = "0.22"
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json"] }

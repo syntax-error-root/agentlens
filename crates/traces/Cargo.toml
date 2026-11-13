@@ -1,0 +1,24 @@
+[package]
+name = "agentlens-traces"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+
+[dependencies]
+agentlens-domain = { workspace = true }
+agentlens-config = { workspace = true }
+agentlens-observability = { workspace = true }
+agentlens-database = { workspace = true }
+agentlens-telemetry = { workspace = true }
+agentlens-privacy = { workspace = true }
+agentlens-projects = { workspace = true }
+agentlens-agents = { workspace = true }
+opentelemetry-proto = { workspace = true }
+thiserror = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+uuid = { workspace = true }
+chrono = { workspace = true }
+tokio = { workspace = true }

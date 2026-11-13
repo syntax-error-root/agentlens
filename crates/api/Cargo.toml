@@ -1,0 +1,46 @@
+[package]
+name = "agentlens-api"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+
+[dependencies]
+agentlens-app = { workspace = true }
+agentlens-domain = { workspace = true }
+agentlens-config = { workspace = true }
+agentlens-observability = { workspace = true }
+agentlens-database = { workspace = true }
+agentlens-auth = { workspace = true }
+agentlens-organizations = { workspace = true }
+agentlens-projects = { workspace = true }
+agentlens-telemetry = { workspace = true }
+agentlens-traces = { workspace = true }
+agentlens-analytics = { workspace = true }
+agentlens-pricing = { workspace = true }
+agentlens-privacy = { workspace = true }
+agentlens-alerts = { workspace = true }
+agentlens-notifications = { workspace = true }
+agentlens-agents = { workspace = true }
+sqlx = { workspace = true }
+rust_decimal = { workspace = true }
+prost = { workspace = true }
+opentelemetry-proto = { workspace = true }
+axum = { workspace = true }
+tokio = { workspace = true }
+tower = { workspace = true }
+tower-http = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+uuid = { workspace = true }
+chrono = { workspace = true }
+subtle = { workspace = true }
+flate2 = { workspace = true }
+
+[dev-dependencies]
+hex = { workspace = true }
+sqlx = { workspace = true }
+
+

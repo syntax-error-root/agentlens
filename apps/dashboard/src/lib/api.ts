@@ -1,0 +1,538 @@
+import {
+  Agent,
+  AgentAnalyticsItem,
+  AgentHealthReport,
+  AgentVersion,
+  AlertEvent,
+  AlertRule,
+  AnalyticsOverview,
+  ApiKey,
+  CostAnalyticsResult,
+  Environment,
+  ErrorAnalyticsResult,
+  LatencyAnalyticsResult,
+  ModelAnalyticsItem,
+  ModelPricing,
+  NotificationChannel,
+  OrgRole,
+  Organization,
+  Project,
+  ProjectOverviewMetrics,
+  Session,
+  Span,
+  SpanDetail,
+  TokenAnalyticsResult,
+  ToolAnalyticsItem,
+  Trace,
+  TraceQueryResult,
+  User,
+} from "@/types";
+
+let csrfToken: string | null = null;
+
+export function setCsrfToken(token: string | null) {
+  csrfToken = token;
+  if (typeof window !== "undefined") {
+    if (token) {
+      sessionStorage.setItem("agentlens_csrf", token);
+    } else {
+      sessionStorage.removeItem("agentlens_csrf");
+    }
+  }
+}
+
+export function getCsrfToken(): string | null {
+  if (csrfToken) return csrfToken;
+  if (typeof window !== "undefined") {
+    csrfToken = sessionStorage.getItem("agentlens_csrf");
+  }
+  return csrfToken;
+}
+
+export class ApiError extends Error {
+  status: number;
+  data: unknown;
+
+  constructor(status: number, message: string, data?: unknown) {
+    super(message);
+    this.name = "ApiError";
+    this.status = status;
+    this.data = data;
+  }
+}
+
+async function request<T>(
+  path: string,
+  options: RequestInit = {}
+): Promise<T> {
+  const headers = new Headers(options.headers || {});
+  headers.set("Accept", "application/json");
+
+  const method = (options.method || "GET").toUpperCase();
+  if (["POST", "PUT", "PATCH", "DELETE"].includes(method)) {
+    const token = getCsrfToken();
+    if (token) {
+      headers.set("X-CSRF-Token", token);
+    }
+    if (options.body && typeof options.body === "string" && !headers.has("Content-Type")) {
+      headers.set("Content-Type", "application/json");
+    }
+  }
+
+  const res = await fetch(path, {
+    ...options,
+    headers,
+    credentials: "same-origin",
+  });
+
+  if (!res.ok) {
+    let errorMsg = `Request failed with status ${res.status}`;
+    let errorData = null;
+    try {
+      errorData = await res.json();
+      if (errorData && typeof errorData === "object" && "error" in errorData) {
+        errorMsg = String((errorData as { error: unknown }).error);
+      }
+    } catch {
+      // Body not JSON
+    }
+    throw new ApiError(res.status, errorMsg, errorData);
+  }
+
+  if (res.status === 204) {
+    return null as unknown as T;
+  }
+
+  return res.json() as Promise<T>;
+}
+
+export const api = {
+  auth: {
+    async getBootstrapStatus(): Promise<{ can_bootstrap: boolean }> {
+      return request<{ can_bootstrap: boolean }>("/api/v1/auth/bootstrap/status");
+    },
+    async bootstrap(input: {
+      email: string;
+      password: string;
+      organization_name: string;
+      organization_slug: string;
+      default_project_name?: string;
+    }): Promise<{ user: User; csrf_token: string }> {
+      const data = await request<{ user: User; csrf_token: string }>("/api/v1/auth/bootstrap", {
+        method: "POST",
+        body: JSON.stringify(input),
+      });
+      if (data.csrf_token) setCsrfToken(data.csrf_token);
+      return data;
+    },
+    async login(input: {
+      email: string;
+      password: string;
+    }): Promise<{ user: User; csrf_token: string }> {
+      const data = await request<{ user: User; csrf_token: string }>("/api/v1/auth/login", {
+        method: "POST",
+        body: JSON.stringify(input),
+      });
+      if (data.csrf_token) setCsrfToken(data.csrf_token);
+      return data;
+    },
+    async getMe(): Promise<{
+      user: User;
+      organizations: Array<{ organization: Organization; role: OrgRole }>;
+    }> {
+      return request<{
+        user: User;
+        organizations: Array<{ organization: Organization; role: OrgRole }>;
+      }>("/api/v1/auth/me");
+    },
+    async logout(): Promise<void> {
+      try {
+        await request("/api/v1/auth/logout", { method: "POST" });
+      } finally {
+        setCsrfToken(null);
+      }
+    },
+    async oidcStart(): Promise<{
+      authorization_url: string;
+      state: string;
+      nonce: string;
+      code_verifier: string;
+    }> {
+      return request<{
+        authorization_url: string;
+        state: string;
+        nonce: string;
+        code_verifier: string;
+      }>("/api/v1/auth/oidc/start");
+    },
+    async oidcCallback(input: {
+      code: string;
+      nonce: string;
+      code_verifier: string;
+      state?: string;
+    }): Promise<{ user: User; csrf_token: string }> {
+      const data = await request<{ user: User; csrf_token: string }>("/api/v1/auth/oidc/callback", {
+        method: "POST",
+        body: JSON.stringify(input),
+      });
+      if (data.csrf_token) setCsrfToken(data.csrf_token);
+      return data;
+    },
+  },
+
+  projects: {
+    async list(organizationId?: string): Promise<Project[]> {
+      const query = organizationId ? `?organization_id=${encodeURIComponent(organizationId)}` : "";
+      return request<Project[]>(`/api/v1/projects${query}`);
+    },
+    async get(projectId: string): Promise<Project> {
+      return request<Project>(`/api/v1/projects/${encodeURIComponent(projectId)}`);
+    },
+    async listEnvironments(projectId: string): Promise<Environment[]> {
+      return request<Environment[]>(`/api/v1/projects/${encodeURIComponent(projectId)}/environments`);
+    },
+    async listApiKeys(projectId: string): Promise<ApiKey[]> {
+      return request<ApiKey[]>(`/api/v1/projects/${encodeURIComponent(projectId)}/api-keys`);
+    },
+    async createApiKey(
+      projectId: string,
+      input: {
+        environment_id: string;
+        name: string;
+        scopes?: string[];
+        expires_in_days?: number;
+      }
+    ): Promise<{ api_key: ApiKey; secret: string }> {
+      return request<{ api_key: ApiKey; secret: string }>(
+        `/api/v1/projects/${encodeURIComponent(projectId)}/api-keys`,
+        {
+          method: "POST",
+          body: JSON.stringify(input),
+        }
+      );
+    },
+    async revokeApiKey(keyId: string): Promise<void> {
+      return request<void>(`/api/v1/api-keys/${encodeURIComponent(keyId)}`, {
+        method: "DELETE",
+      });
+    },
+  },
+
+  overview: {
+    async get(
+      projectId: string,
+      params?: {
+        environment_id?: string;
+        from?: string;
+        to?: string;
+      }
+    ): Promise<ProjectOverviewMetrics> {
+      const query = new URLSearchParams();
+      if (params?.environment_id) query.set("environment_id", params.environment_id);
+      if (params?.from) query.set("from", params.from);
+      if (params?.to) query.set("to", params.to);
+      const qs = query.toString() ? `?${query.toString()}` : "";
+      return request<ProjectOverviewMetrics>(
+        `/api/v1/projects/${encodeURIComponent(projectId)}/overview${qs}`
+      );
+    },
+  },
+
+  agents: {
+    async list(projectId: string): Promise<Agent[]> {
+      return request<Agent[]>(`/api/v1/projects/${encodeURIComponent(projectId)}/agents`);
+    },
+    async create(
+      projectId: string,
+      input: {
+        name: string;
+        framework?: string;
+        language?: string;
+        description?: string;
+        metadata?: Record<string, unknown>;
+      }
+    ): Promise<Agent> {
+      return request<Agent>(`/api/v1/projects/${encodeURIComponent(projectId)}/agents`, {
+        method: "POST",
+        body: JSON.stringify(input),
+      });
+    },
+    async get(agentId: string): Promise<Agent> {
+      return request<Agent>(`/api/v1/agents/${encodeURIComponent(agentId)}`);
+    },
+    async update(
+      agentId: string,
+      input: {
+        framework?: string;
+        language?: string;
+        description?: string;
+        metadata?: Record<string, unknown>;
+      }
+    ): Promise<Agent> {
+      return request<Agent>(`/api/v1/agents/${encodeURIComponent(agentId)}`, {
+        method: "PATCH",
+        body: JSON.stringify(input),
+      });
+    },
+    async listVersions(agentId: string): Promise<AgentVersion[]> {
+      return request<AgentVersion[]>(`/api/v1/agents/${encodeURIComponent(agentId)}/versions`);
+    },
+    async listTraces(agentId: string, limit = 50): Promise<Trace[]> {
+      return request<Trace[]>(
+        `/api/v1/agents/${encodeURIComponent(agentId)}/traces?limit=${limit}`
+      );
+    },
+    async getHealth(agentId: string, window = "24h"): Promise<AgentHealthReport> {
+      return request<AgentHealthReport>(
+        `/api/v1/agents/${encodeURIComponent(agentId)}/health?window=${encodeURIComponent(window)}`
+      );
+    },
+  },
+
+  traces: {
+    async list(params: {
+      project_id: string;
+      environment_id?: string;
+      agent_id?: string;
+      status?: string;
+      provider?: string;
+      model?: string;
+      span_type?: string;
+      min_duration_ms?: number;
+      max_duration_ms?: number;
+      from?: string;
+      to?: string;
+      search_trace_id?: string;
+      cursor?: string;
+      limit?: number;
+    }): Promise<TraceQueryResult> {
+      const query = new URLSearchParams();
+      query.set("project_id", params.project_id);
+      if (params.environment_id) query.set("environment_id", params.environment_id);
+      if (params.agent_id) query.set("agent_id", params.agent_id);
+      if (params.status) query.set("status", params.status);
+      if (params.provider) query.set("provider", params.provider);
+      if (params.model) query.set("model", params.model);
+      if (params.span_type) query.set("span_type", params.span_type);
+      if (params.min_duration_ms !== undefined)
+        query.set("min_duration_ms", params.min_duration_ms.toString());
+      if (params.max_duration_ms !== undefined)
+        query.set("max_duration_ms", params.max_duration_ms.toString());
+      if (params.from) query.set("from", params.from);
+      if (params.to) query.set("to", params.to);
+      if (params.search_trace_id) query.set("search_trace_id", params.search_trace_id);
+      if (params.cursor) query.set("cursor", params.cursor);
+      if (params.limit) query.set("limit", params.limit.toString());
+
+      return request<TraceQueryResult>(`/api/v1/traces?${query.toString()}`);
+    },
+    async get(traceRecordId: string): Promise<Trace> {
+      return request<Trace>(`/api/v1/traces/${encodeURIComponent(traceRecordId)}`);
+    },
+    async getSpans(traceRecordId: string): Promise<Span[]> {
+      return request<Span[]>(`/api/v1/traces/${encodeURIComponent(traceRecordId)}/spans`);
+    },
+  },
+
+  spans: {
+    async get(spanRecordId: string): Promise<SpanDetail> {
+      return request<SpanDetail>(`/api/v1/spans/${encodeURIComponent(spanRecordId)}`);
+    },
+  },
+
+  sessions: {
+    async list(projectId: string, limit = 50): Promise<Session[]> {
+      return request<Session[]>(
+        `/api/v1/sessions?project_id=${encodeURIComponent(projectId)}&limit=${limit}`
+      );
+    },
+    async get(sessionId: string): Promise<Session> {
+      return request<Session>(`/api/v1/sessions/${encodeURIComponent(sessionId)}`);
+    },
+    async listTraces(sessionId: string, limit = 50): Promise<Trace[]> {
+      return request<Trace[]>(
+        `/api/v1/sessions/${encodeURIComponent(sessionId)}/traces?limit=${limit}`
+      );
+    },
+  },
+
+  analytics: {
+    async getOverview(params: {
+      projectId: string;
+      environmentId?: string;
+      from?: string;
+      to?: string;
+    }): Promise<AnalyticsOverview> {
+      const q = new URLSearchParams({ project_id: params.projectId });
+      if (params.environmentId) q.set("environment_id", params.environmentId);
+      if (params.from) q.set("from", params.from);
+      if (params.to) q.set("to", params.to);
+      return request<AnalyticsOverview>(`/api/v1/analytics/overview?${q.toString()}`);
+    },
+    async getTokens(params: {
+      projectId: string;
+      environmentId?: string;
+      from?: string;
+      to?: string;
+    }): Promise<TokenAnalyticsResult> {
+      const q = new URLSearchParams({ project_id: params.projectId });
+      if (params.environmentId) q.set("environment_id", params.environmentId);
+      if (params.from) q.set("from", params.from);
+      if (params.to) q.set("to", params.to);
+      return request<TokenAnalyticsResult>(`/api/v1/analytics/tokens?${q.toString()}`);
+    },
+    async getCosts(params: {
+      projectId: string;
+      environmentId?: string;
+      from?: string;
+      to?: string;
+    }): Promise<CostAnalyticsResult> {
+      const q = new URLSearchParams({ project_id: params.projectId });
+      if (params.environmentId) q.set("environment_id", params.environmentId);
+      if (params.from) q.set("from", params.from);
+      if (params.to) q.set("to", params.to);
+      return request<CostAnalyticsResult>(`/api/v1/analytics/costs?${q.toString()}`);
+    },
+    async getModels(params: {
+      projectId: string;
+      from?: string;
+      to?: string;
+    }): Promise<ModelAnalyticsItem[]> {
+      const q = new URLSearchParams({ project_id: params.projectId });
+      if (params.from) q.set("from", params.from);
+      if (params.to) q.set("to", params.to);
+      return request<ModelAnalyticsItem[]>(`/api/v1/analytics/models?${q.toString()}`);
+    },
+    async getAgents(params: {
+      projectId: string;
+      environmentId?: string;
+      from?: string;
+      to?: string;
+    }): Promise<AgentAnalyticsItem[]> {
+      const q = new URLSearchParams({ project_id: params.projectId });
+      if (params.environmentId) q.set("environment_id", params.environmentId);
+      if (params.from) q.set("from", params.from);
+      if (params.to) q.set("to", params.to);
+      return request<AgentAnalyticsItem[]>(`/api/v1/analytics/agents?${q.toString()}`);
+    },
+    async getTools(params: {
+      projectId: string;
+      from?: string;
+      to?: string;
+    }): Promise<ToolAnalyticsItem[]> {
+      const q = new URLSearchParams({ project_id: params.projectId });
+      if (params.from) q.set("from", params.from);
+      if (params.to) q.set("to", params.to);
+      return request<ToolAnalyticsItem[]>(`/api/v1/analytics/tools?${q.toString()}`);
+    },
+    async getLatency(params: {
+      projectId: string;
+      environmentId?: string;
+      from?: string;
+      to?: string;
+    }): Promise<LatencyAnalyticsResult> {
+      const q = new URLSearchParams({ project_id: params.projectId });
+      if (params.environmentId) q.set("environment_id", params.environmentId);
+      if (params.from) q.set("from", params.from);
+      if (params.to) q.set("to", params.to);
+      return request<LatencyAnalyticsResult>(`/api/v1/analytics/latency?${q.toString()}`);
+    },
+    async getErrors(params: {
+      projectId: string;
+      environmentId?: string;
+      from?: string;
+      to?: string;
+    }): Promise<ErrorAnalyticsResult> {
+      const q = new URLSearchParams({ project_id: params.projectId });
+      if (params.environmentId) q.set("environment_id", params.environmentId);
+      if (params.from) q.set("from", params.from);
+      if (params.to) q.set("to", params.to);
+      return request<ErrorAnalyticsResult>(`/api/v1/analytics/errors?${q.toString()}`);
+    },
+  },
+
+  pricing: {
+    async list(): Promise<ModelPricing[]> {
+      return request<ModelPricing[]>("/api/v1/pricing");
+    },
+  },
+
+  alerts: {
+    async listRules(projectId: string): Promise<AlertRule[]> {
+      return request<AlertRule[]>(`/api/v1/projects/${encodeURIComponent(projectId)}/alert-rules`);
+    },
+    async createRule(
+      projectId: string,
+      data: {
+        name: string;
+        metric: string;
+        operator: string;
+        threshold: number;
+        window_seconds: number;
+        min_sample_count?: number;
+        cooldown_seconds?: number;
+        severity?: string;
+        description?: string;
+      }
+    ): Promise<AlertRule> {
+      return request<AlertRule>(`/api/v1/projects/${encodeURIComponent(projectId)}/alert-rules`, {
+        method: "POST",
+        body: JSON.stringify(data),
+      });
+    },
+    async deleteRule(ruleId: string): Promise<void> {
+      await request<void>(`/api/v1/alert-rules/${encodeURIComponent(ruleId)}`, {
+        method: "DELETE",
+      });
+    },
+    async listEvents(
+      projectId: string,
+      status?: string,
+      limit = 50,
+      offset = 0
+    ): Promise<AlertEvent[]> {
+      const q = new URLSearchParams({ limit: limit.toString(), offset: offset.toString() });
+      if (status) q.set("status", status);
+      return request<AlertEvent[]>(
+        `/api/v1/projects/${encodeURIComponent(projectId)}/alert-events?${q.toString()}`
+      );
+    },
+    async acknowledgeEvent(eventId: string): Promise<AlertEvent> {
+      return request<AlertEvent>(
+        `/api/v1/alert-events/${encodeURIComponent(eventId)}/acknowledge`,
+        { method: "POST" }
+      );
+    },
+  },
+
+  notificationChannels: {
+    async list(projectId: string): Promise<NotificationChannel[]> {
+      return request<NotificationChannel[]>(
+        `/api/v1/projects/${encodeURIComponent(projectId)}/notification-channels`
+      );
+    },
+    async create(
+      projectId: string,
+      data: { channel_type: string; name: string; config: Record<string, unknown> }
+    ): Promise<NotificationChannel> {
+      return request<NotificationChannel>(
+        `/api/v1/projects/${encodeURIComponent(projectId)}/notification-channels`,
+        {
+          method: "POST",
+          body: JSON.stringify(data),
+        }
+      );
+    },
+    async delete(channelId: string): Promise<void> {
+      await request<void>(`/api/v1/notification-channels/${encodeURIComponent(channelId)}`, {
+        method: "DELETE",
+      });
+    },
+    async test(channelId: string): Promise<{ success: boolean; message?: string; error?: string }> {
+      return request<{ success: boolean; message?: string; error?: string }>(
+        `/api/v1/notification-channels/${encodeURIComponent(channelId)}/test`,
+        { method: "POST" }
+      );
+    },
+  },
+};
