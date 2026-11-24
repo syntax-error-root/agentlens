@@ -408,9 +408,38 @@ pub struct Agent {
     pub language: Option<String>,
     pub description: Option<String>,
     pub metadata: serde_json::Value,
+    pub endpoint_url: Option<String>,
+    pub auth_type: Option<String>,
+    pub auth_token: Option<String>,
+    pub default_model: Option<String>,
     pub last_seen_at: Option<DateTime<Utc>>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ChatSession {
+    pub id: Uuid,
+    pub organization_id: Uuid,
+    pub project_id: Uuid,
+    pub agent_id: Uuid,
+    pub user_id: Option<Uuid>,
+    pub title: String,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ChatMessage {
+    pub id: Uuid,
+    pub organization_id: Uuid,
+    pub project_id: Uuid,
+    pub chat_session_id: Uuid,
+    pub role: String,
+    pub content: String,
+    pub trace_id: Option<String>,
+    pub token_count: Option<i32>,
+    pub created_at: DateTime<Utc>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

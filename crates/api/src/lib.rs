@@ -7,6 +7,7 @@ pub mod agents;
 pub mod alerts;
 pub mod analytics;
 pub mod auth;
+pub mod chat;
 pub mod middleware;
 pub mod organizations;
 pub mod otlp;
@@ -113,6 +114,19 @@ pub fn create_router(state: AppState) -> Router {
         .route(
             "/api/v1/agents/{agent_id}/health",
             get(agents::get_agent_health_handler),
+        )
+        // Agent In-Dashboard Chat
+        .route(
+            "/api/v1/agents/{agent_id}/chat",
+            post(chat::send_chat_message_handler),
+        )
+        .route(
+            "/api/v1/agents/{agent_id}/chat/sessions",
+            get(chat::list_chat_sessions_handler).post(chat::create_chat_session_handler),
+        )
+        .route(
+            "/api/v1/chat/sessions/{session_id}/messages",
+            get(chat::list_chat_messages_handler),
         )
         // Traces and Spans
         .route("/api/v1/traces", get(traces::list_traces_handler))
