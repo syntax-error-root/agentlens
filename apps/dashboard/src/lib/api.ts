@@ -7,6 +7,8 @@ import {
   AlertRule,
   AnalyticsOverview,
   ApiKey,
+  ChatMessage,
+  ChatSession,
   CostAnalyticsResult,
   Environment,
   ErrorAnalyticsResult,
@@ -267,6 +269,10 @@ export const api = {
         language?: string;
         description?: string;
         metadata?: Record<string, unknown>;
+        endpoint_url?: string;
+        auth_type?: string;
+        auth_token?: string;
+        default_model?: string;
       }
     ): Promise<Agent> {
       return request<Agent>(`/api/v1/agents/${encodeURIComponent(agentId)}`, {
@@ -286,6 +292,114 @@ export const api = {
       return request<AgentHealthReport>(
         `/api/v1/agents/${encodeURIComponent(agentId)}/health?window=${encodeURIComponent(window)}`
       );
+    },
+  },
+
+  chat: {
+    async listSessions(agentId: string, limit = 50): Promise<ChatSession[]> {
+      return request<ChatSession[]>(
+        `/api/v1/agents/${encodeURIComponent(agentId)}/chat/sessions?limit=${limit}`
+      );
+    },
+    async createSession(agentId: string, title?: string): Promise<ChatSession> {
+      return request<ChatSession>(
+        `/api/v1/agents/${encodeURIComponent(agentId)}/chat/sessions`,
+        {
+          method: "POST",
+          body: JSON.stringify({ title }),
+        }
+      );
+    },
+    async listMessages(sessionId: string, limit = 100): Promise<ChatMessage[]> {
+      return request<ChatMessage[]>(
+        `/api/v1/chat/sessions/${encodeURIComponent(sessionId)}/messages?limit=${limit}`
+      );
+    },
+    async sendStream(
+      agentId: string,
+      input: {
+        content: string;
+        session_id?: string;
+        model?: string;
+      },
+      onMeta: (meta: { session_id: string }) => void,
+      onToken: (token: string) => void,
+      onDone: () => void,
+      onError: (err: Error) => void
+    ): Promise<void> {
+      try {
+        const headers = new Headers();
+        headers.set("Content-Type", "application/json");
+        const token = getCsrfToken();
+        if (token) {
+          headers.set("X-CSRF-Token", token);
+        }
+
+        const res = await fetch(`/api/v1/agents/${encodeURIComponent(agentId)}/chat`, {
+          method: "POST",
+          headers,
+          credentials: "same-origin",
+          body: JSON.stringify(input),
+        });
+
+        if (!res.ok) {
+          let errorMsg = `Chat request failed with ${res.status}`;
+          try {
+            const errData = await res.json();
+            if (errData?.error) errorMsg = String(errData.error);
+          } catch {
+            // non-json
+          }
+          throw new Error(errorMsg);
+        }
+
+        if (!res.body) {
+          throw new Error("No response body received from chat stream");
+        }
+
+        const reader = res.body.getReader();
+        const decoder = new TextDecoder();
+        let buffer = "";
+
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+
+          buffer += decoder.decode(value, { stream: true });
+          const lines = buffer.split("\n");
+          buffer = lines.pop() || "";
+
+          let currentEvent = "";
+
+          for (const line of lines) {
+            const trimmed = line.trim();
+            if (trimmed.startsWith("event:")) {
+              currentEvent = trimmed.slice(6).trim();
+            } else if (trimmed.startsWith("data:")) {
+              const dataStr = trimmed.slice(5).trim();
+              if (dataStr) {
+                try {
+                  const parsed = JSON.parse(dataStr);
+                  if (currentEvent === "meta" && parsed.session_id) {
+                    onMeta(parsed);
+                  } else if (currentEvent === "token" && parsed.token) {
+                    onToken(parsed.token);
+                  } else if (currentEvent === "done") {
+                    onDone();
+                  }
+                } catch {
+                  // ignore malformed chunks
+                }
+              }
+              currentEvent = "";
+            }
+          }
+        }
+
+        onDone();
+      } catch (err) {
+        onError(err instanceof Error ? err : new Error(String(err)));
+      }
     },
   },
 
