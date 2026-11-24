@@ -60,9 +60,36 @@ export interface Agent {
   language: string | null;
   description: string | null;
   metadata: Record<string, unknown>;
+  endpoint_url?: string | null;
+  auth_type?: string | null;
+  auth_token?: string | null;
+  default_model?: string | null;
   last_seen_at: string | null;
   created_at: string;
   updated_at: string;
+}
+
+export interface ChatSession {
+  id: string;
+  organization_id: string;
+  project_id: string;
+  agent_id: string;
+  user_id: string | null;
+  title: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface ChatMessage {
+  id: string;
+  organization_id: string;
+  project_id: string;
+  chat_session_id: string;
+  role: "user" | "assistant" | "system" | "tool";
+  content: string;
+  trace_id: string | null;
+  token_count: number | null;
+  created_at: string;
 }
 
 export interface AgentVersion {

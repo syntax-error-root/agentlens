@@ -7,14 +7,14 @@ use agentlens_config::AppConfig;
 use agentlens_domain::{
     decode_cursor, encode_cursor, Agent, AgentAnalyticsItem, AgentHealthReport, AgentHealthStatus,
     AgentVersion, AlertEvent, AlertEventStatus, AlertMetric, AlertOperator, AlertRule,
-    AlertSeverity, AnalyticsFilters, AnalyticsOverview, ApiKey, AuditLog, CostAnalyticsResult,
-    CostTimePoint, Environment, ErrorAnalyticsResult, ErrorTimePoint, LatencyAnalyticsResult,
-    ModelAnalyticsItem, ModelPricing, NotificationChannel, NotificationChannelType,
-    NotificationDelivery, NotificationDeliveryStatus, OrgRole, Organization, OrganizationMember,
-    OutboxJob, Project, ProjectOverviewMetrics, Session, Span, SpanDetail, SpanEvent, SpanId,
-    SpanLink, SpanType, TokenAnalyticsResult, TokenUsage, TokenUsageTimePoint, ToolAnalyticsItem,
-    TopErrorItem, Trace, TraceId, TraceQueryFilters, TraceQueryResult, TraceStatus, UsageSource,
-    User,
+    AlertSeverity, AnalyticsFilters, AnalyticsOverview, ApiKey, AuditLog, ChatMessage, ChatSession,
+    CostAnalyticsResult, CostTimePoint, Environment, ErrorAnalyticsResult, ErrorTimePoint,
+    LatencyAnalyticsResult, ModelAnalyticsItem, ModelPricing, NotificationChannel,
+    NotificationChannelType, NotificationDelivery, NotificationDeliveryStatus, OrgRole,
+    Organization, OrganizationMember, OutboxJob, Project, ProjectOverviewMetrics, Session, Span,
+    SpanDetail, SpanEvent, SpanId, SpanLink, SpanType, TokenAnalyticsResult, TokenUsage,
+    TokenUsageTimePoint, ToolAnalyticsItem, TopErrorItem, Trace, TraceId, TraceQueryFilters,
+    TraceQueryResult, TraceStatus, UsageSource, User,
 };
 use agentlens_telemetry::NormalizedSpan;
 use chrono::{DateTime, Utc};
@@ -1289,7 +1289,8 @@ impl<'a> AgentsRepository<'a> {
                 last_seen_at = now(),
                 updated_at = now()
             RETURNING id, organization_id, project_id, name, framework, language,
-                      description, metadata, last_seen_at, created_at, updated_at
+                      description, metadata, endpoint_url, auth_type, auth_token, default_model,
+                      last_seen_at, created_at, updated_at
             "#,
         )
         .bind(org_id)
@@ -1306,6 +1307,10 @@ impl<'a> AgentsRepository<'a> {
             language: r.get("language"),
             description: r.get("description"),
             metadata: r.get("metadata"),
+            endpoint_url: r.try_get("endpoint_url").ok().flatten(),
+            auth_type: r.try_get("auth_type").ok().flatten(),
+            auth_token: r.try_get("auth_token").ok().flatten(),
+            default_model: r.try_get("default_model").ok().flatten(),
             last_seen_at: r.get("last_seen_at"),
             created_at: r.get("created_at"),
             updated_at: r.get("updated_at"),
@@ -1320,7 +1325,8 @@ impl<'a> AgentsRepository<'a> {
         let rows = sqlx::query(
             r#"
             SELECT id, organization_id, project_id, name, framework, language,
-                   description, metadata, last_seen_at, created_at, updated_at
+                   description, metadata, endpoint_url, auth_type, auth_token, default_model,
+                   last_seen_at, created_at, updated_at
             FROM agents
             WHERE project_id = $1
             ORDER BY COALESCE(last_seen_at, created_at) DESC
@@ -1336,6 +1342,10 @@ impl<'a> AgentsRepository<'a> {
             language: r.get("language"),
             description: r.get("description"),
             metadata: r.get("metadata"),
+            endpoint_url: r.try_get("endpoint_url").ok().flatten(),
+            auth_type: r.try_get("auth_type").ok().flatten(),
+            auth_token: r.try_get("auth_token").ok().flatten(),
+            default_model: r.try_get("default_model").ok().flatten(),
             last_seen_at: r.get("last_seen_at"),
             created_at: r.get("created_at"),
             updated_at: r.get("updated_at"),
@@ -1362,7 +1372,8 @@ impl<'a> AgentsRepository<'a> {
             INSERT INTO agents (organization_id, project_id, name, framework, language, description, metadata, last_seen_at)
             VALUES ($1, $2, $3, $4, $5, $6, $7, now())
             RETURNING id, organization_id, project_id, name, framework, language,
-                      description, metadata, last_seen_at, created_at, updated_at
+                      description, metadata, endpoint_url, auth_type, auth_token, default_model,
+                      last_seen_at, created_at, updated_at
             "#,
         )
         .bind(org_id)
@@ -1381,6 +1392,10 @@ impl<'a> AgentsRepository<'a> {
             language: r.get("language"),
             description: r.get("description"),
             metadata: r.get("metadata"),
+            endpoint_url: r.try_get("endpoint_url").ok().flatten(),
+            auth_type: r.try_get("auth_type").ok().flatten(),
+            auth_token: r.try_get("auth_token").ok().flatten(),
+            default_model: r.try_get("default_model").ok().flatten(),
             last_seen_at: r.get("last_seen_at"),
             created_at: r.get("created_at"),
             updated_at: r.get("updated_at"),
@@ -1399,7 +1414,8 @@ impl<'a> AgentsRepository<'a> {
         let row = sqlx::query(
             r#"
             SELECT id, organization_id, project_id, name, framework, language,
-                   description, metadata, last_seen_at, created_at, updated_at
+                   description, metadata, endpoint_url, auth_type, auth_token, default_model,
+                   last_seen_at, created_at, updated_at
             FROM agents
             WHERE project_id = $1 AND id = $2
             "#,
@@ -1415,6 +1431,10 @@ impl<'a> AgentsRepository<'a> {
             language: r.get("language"),
             description: r.get("description"),
             metadata: r.get("metadata"),
+            endpoint_url: r.try_get("endpoint_url").ok().flatten(),
+            auth_type: r.try_get("auth_type").ok().flatten(),
+            auth_token: r.try_get("auth_token").ok().flatten(),
+            default_model: r.try_get("default_model").ok().flatten(),
             last_seen_at: r.get("last_seen_at"),
             created_at: r.get("created_at"),
             updated_at: r.get("updated_at"),
@@ -1429,7 +1449,8 @@ impl<'a> AgentsRepository<'a> {
         let row = sqlx::query(
             r#"
             SELECT id, organization_id, project_id, name, framework, language,
-                   description, metadata, last_seen_at, created_at, updated_at
+                   description, metadata, endpoint_url, auth_type, auth_token, default_model,
+                   last_seen_at, created_at, updated_at
             FROM agents
             WHERE id = $1
             "#,
@@ -1444,6 +1465,10 @@ impl<'a> AgentsRepository<'a> {
             language: r.get("language"),
             description: r.get("description"),
             metadata: r.get("metadata"),
+            endpoint_url: r.try_get("endpoint_url").ok().flatten(),
+            auth_type: r.try_get("auth_type").ok().flatten(),
+            auth_token: r.try_get("auth_token").ok().flatten(),
+            default_model: r.try_get("default_model").ok().flatten(),
             last_seen_at: r.get("last_seen_at"),
             created_at: r.get("created_at"),
             updated_at: r.get("updated_at"),
@@ -1463,6 +1488,35 @@ impl<'a> AgentsRepository<'a> {
         description: Option<&str>,
         metadata: Option<serde_json::Value>,
     ) -> Result<Agent, DatabaseError> {
+        self.update_with_endpoint(
+            project_id,
+            agent_id,
+            framework,
+            language,
+            description,
+            metadata,
+            None,
+            None,
+            None,
+            None,
+        )
+        .await
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub async fn update_with_endpoint(
+        &self,
+        project_id: Uuid,
+        agent_id: Uuid,
+        framework: Option<&str>,
+        language: Option<&str>,
+        description: Option<&str>,
+        metadata: Option<serde_json::Value>,
+        endpoint_url: Option<Option<String>>,
+        auth_type: Option<Option<String>>,
+        auth_token: Option<Option<String>>,
+        default_model: Option<Option<String>>,
+    ) -> Result<Agent, DatabaseError> {
         let existing = self
             .get_by_id(project_id, agent_id)
             .await?
@@ -1472,6 +1526,10 @@ impl<'a> AgentsRepository<'a> {
         let language_val = language.or(existing.language.as_deref());
         let description_val = description.or(existing.description.as_deref());
         let metadata_val = metadata.unwrap_or(existing.metadata);
+        let endpoint_url_val = endpoint_url.unwrap_or(existing.endpoint_url);
+        let auth_type_val = auth_type.unwrap_or(existing.auth_type);
+        let auth_token_val = auth_token.unwrap_or(existing.auth_token);
+        let default_model_val = default_model.unwrap_or(existing.default_model);
 
         let row = sqlx::query(
             r#"
@@ -1480,16 +1538,25 @@ impl<'a> AgentsRepository<'a> {
                 language = $2,
                 description = $3,
                 metadata = $4,
+                endpoint_url = $5,
+                auth_type = $6,
+                auth_token = $7,
+                default_model = $8,
                 updated_at = now()
-            WHERE project_id = $5 AND id = $6
+            WHERE project_id = $9 AND id = $10
             RETURNING id, organization_id, project_id, name, framework, language,
-                      description, metadata, last_seen_at, created_at, updated_at
+                      description, metadata, endpoint_url, auth_type, auth_token, default_model,
+                      last_seen_at, created_at, updated_at
             "#,
         )
         .bind(framework_val)
         .bind(language_val)
         .bind(description_val)
         .bind(metadata_val)
+        .bind(endpoint_url_val)
+        .bind(auth_type_val)
+        .bind(auth_token_val)
+        .bind(default_model_val)
         .bind(project_id)
         .bind(agent_id)
         .map(|r: PgRow| Agent {
@@ -1501,6 +1568,10 @@ impl<'a> AgentsRepository<'a> {
             language: r.get("language"),
             description: r.get("description"),
             metadata: r.get("metadata"),
+            endpoint_url: r.try_get("endpoint_url").ok().flatten(),
+            auth_type: r.try_get("auth_type").ok().flatten(),
+            auth_token: r.try_get("auth_token").ok().flatten(),
+            default_model: r.try_get("default_model").ok().flatten(),
             last_seen_at: r.get("last_seen_at"),
             created_at: r.get("created_at"),
             updated_at: r.get("updated_at"),
@@ -1571,6 +1642,213 @@ impl<'a> AgentsRepository<'a> {
             traces.push(parse_trace_row(r)?);
         }
         Ok(traces)
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Agent Chat Repository
+// ---------------------------------------------------------------------------
+
+pub struct ChatRepository<'a> {
+    pool: &'a DbPool,
+}
+
+impl<'a> ChatRepository<'a> {
+    pub fn new(pool: &'a DbPool) -> Self {
+        Self { pool }
+    }
+
+    pub async fn create_session(
+        &self,
+        org_id: Uuid,
+        project_id: Uuid,
+        agent_id: Uuid,
+        user_id: Option<Uuid>,
+        title: &str,
+    ) -> Result<ChatSession, DatabaseError> {
+        let row = sqlx::query(
+            r#"
+            INSERT INTO chat_sessions (organization_id, project_id, agent_id, user_id, title)
+            VALUES ($1, $2, $3, $4, $5)
+            RETURNING id, organization_id, project_id, agent_id, user_id, title, created_at, updated_at
+            "#,
+        )
+        .bind(org_id)
+        .bind(project_id)
+        .bind(agent_id)
+        .bind(user_id)
+        .bind(title)
+        .map(|r: PgRow| ChatSession {
+            id: r.get("id"),
+            organization_id: r.get("organization_id"),
+            project_id: r.get("project_id"),
+            agent_id: r.get("agent_id"),
+            user_id: r.get("user_id"),
+            title: r.get("title"),
+            created_at: r.get("created_at"),
+            updated_at: r.get("updated_at"),
+        })
+        .fetch_one(self.pool)
+        .await?;
+
+        Ok(row)
+    }
+
+    pub async fn list_sessions(
+        &self,
+        project_id: Uuid,
+        agent_id: Uuid,
+        limit: i64,
+    ) -> Result<Vec<ChatSession>, DatabaseError> {
+        let rows = sqlx::query(
+            r#"
+            SELECT id, organization_id, project_id, agent_id, user_id, title, created_at, updated_at
+            FROM chat_sessions
+            WHERE project_id = $1 AND agent_id = $2
+            ORDER BY updated_at DESC
+            LIMIT $3
+            "#,
+        )
+        .bind(project_id)
+        .bind(agent_id)
+        .bind(limit.clamp(1, 100))
+        .map(|r: PgRow| ChatSession {
+            id: r.get("id"),
+            organization_id: r.get("organization_id"),
+            project_id: r.get("project_id"),
+            agent_id: r.get("agent_id"),
+            user_id: r.get("user_id"),
+            title: r.get("title"),
+            created_at: r.get("created_at"),
+            updated_at: r.get("updated_at"),
+        })
+        .fetch_all(self.pool)
+        .await?;
+
+        Ok(rows)
+    }
+
+    pub async fn get_session(
+        &self,
+        project_id: Uuid,
+        session_id: Uuid,
+    ) -> Result<Option<ChatSession>, DatabaseError> {
+        let row = sqlx::query(
+            r#"
+            SELECT id, organization_id, project_id, agent_id, user_id, title, created_at, updated_at
+            FROM chat_sessions
+            WHERE project_id = $1 AND id = $2
+            "#,
+        )
+        .bind(project_id)
+        .bind(session_id)
+        .map(|r: PgRow| ChatSession {
+            id: r.get("id"),
+            organization_id: r.get("organization_id"),
+            project_id: r.get("project_id"),
+            agent_id: r.get("agent_id"),
+            user_id: r.get("user_id"),
+            title: r.get("title"),
+            created_at: r.get("created_at"),
+            updated_at: r.get("updated_at"),
+        })
+        .fetch_optional(self.pool)
+        .await?;
+
+        Ok(row)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub async fn append_message(
+        &self,
+        org_id: Uuid,
+        project_id: Uuid,
+        chat_session_id: Uuid,
+        role: &str,
+        content: &str,
+        trace_id: Option<&str>,
+        token_count: Option<i32>,
+    ) -> Result<ChatMessage, DatabaseError> {
+        let mut tx = self.pool.begin().await?;
+
+        let row = sqlx::query(
+            r#"
+            INSERT INTO chat_messages (organization_id, project_id, chat_session_id, role, content, trace_id, token_count)
+            VALUES ($1, $2, $3, $4, $5, $6, $7)
+            RETURNING id, organization_id, project_id, chat_session_id, role, content, trace_id, token_count, created_at
+            "#,
+        )
+        .bind(org_id)
+        .bind(project_id)
+        .bind(chat_session_id)
+        .bind(role)
+        .bind(content)
+        .bind(trace_id)
+        .bind(token_count)
+        .map(|r: PgRow| ChatMessage {
+            id: r.get("id"),
+            organization_id: r.get("organization_id"),
+            project_id: r.get("project_id"),
+            chat_session_id: r.get("chat_session_id"),
+            role: r.get("role"),
+            content: r.get("content"),
+            trace_id: r.get("trace_id"),
+            token_count: r.get("token_count"),
+            created_at: r.get("created_at"),
+        })
+        .fetch_one(&mut *tx)
+        .await?;
+
+        sqlx::query(
+            r#"
+            UPDATE chat_sessions
+            SET updated_at = now()
+            WHERE project_id = $1 AND id = $2
+            "#,
+        )
+        .bind(project_id)
+        .bind(chat_session_id)
+        .execute(&mut *tx)
+        .await?;
+
+        tx.commit().await?;
+
+        Ok(row)
+    }
+
+    pub async fn list_messages(
+        &self,
+        project_id: Uuid,
+        chat_session_id: Uuid,
+        limit: i64,
+    ) -> Result<Vec<ChatMessage>, DatabaseError> {
+        let rows = sqlx::query(
+            r#"
+            SELECT id, organization_id, project_id, chat_session_id, role, content, trace_id, token_count, created_at
+            FROM chat_messages
+            WHERE project_id = $1 AND chat_session_id = $2
+            ORDER BY created_at ASC
+            LIMIT $3
+            "#,
+        )
+        .bind(project_id)
+        .bind(chat_session_id)
+        .bind(limit.clamp(1, 500))
+        .map(|r: PgRow| ChatMessage {
+            id: r.get("id"),
+            organization_id: r.get("organization_id"),
+            project_id: r.get("project_id"),
+            chat_session_id: r.get("chat_session_id"),
+            role: r.get("role"),
+            content: r.get("content"),
+            trace_id: r.get("trace_id"),
+            token_count: r.get("token_count"),
+            created_at: r.get("created_at"),
+        })
+        .fetch_all(self.pool)
+        .await?;
+
+        Ok(rows)
     }
 }
 

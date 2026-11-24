@@ -17,6 +17,7 @@ pub enum ConfigError {
 pub struct ServerConfig {
     pub api_bind_addr: String,
     pub otlp_http_bind_addr: String,
+    pub allow_local_agent_endpoints: bool,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -65,6 +66,9 @@ impl Default for AppConfig {
                     .unwrap_or_else(|_| "0.0.0.0:8080".to_string()),
                 otlp_http_bind_addr: env::var("OTLP_HTTP_BIND_ADDR")
                     .unwrap_or_else(|_| "0.0.0.0:4318".to_string()),
+                allow_local_agent_endpoints: env::var("ALLOW_LOCAL_AGENT_ENDPOINTS")
+                    .map(|v| v.eq_ignore_ascii_case("true") || v == "1")
+                    .unwrap_or(false),
             },
             database: DatabaseConfig {
                 url: env::var("DATABASE_URL").unwrap_or_else(|_| {

@@ -26,6 +26,10 @@ pub struct CreateAgentInput {
     pub language: Option<String>,
     pub description: Option<String>,
     pub metadata: Option<serde_json::Value>,
+    pub endpoint_url: Option<String>,
+    pub auth_type: Option<String>,
+    pub auth_token: Option<String>,
+    pub default_model: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -34,6 +38,10 @@ pub struct UpdateAgentInput {
     pub language: Option<String>,
     pub description: Option<String>,
     pub metadata: Option<serde_json::Value>,
+    pub endpoint_url: Option<String>,
+    pub auth_type: Option<String>,
+    pub auth_token: Option<String>,
+    pub default_model: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -320,13 +328,17 @@ pub async fn update_agent_handler(
     }
 
     match agent_repo
-        .update(
+        .update_with_endpoint(
             agent.project_id,
             agent.id,
             input.framework.as_deref(),
             input.language.as_deref(),
             input.description.as_deref(),
             input.metadata,
+            input.endpoint_url.map(Some),
+            input.auth_type.map(Some),
+            input.auth_token.map(Some),
+            input.default_model.map(Some),
         )
         .await
     {

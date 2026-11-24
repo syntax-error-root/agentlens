@@ -5,6 +5,7 @@ import Link from "next/link";
 import { useParams } from "next/navigation";
 import { api } from "@/lib/api";
 import { Agent, AgentHealthReport, AgentVersion, Trace } from "@/types";
+import { AgentChatPane } from "@/components/chat/AgentChatPane";
 import {
   AlertCircle,
   ArrowLeft,
@@ -13,6 +14,7 @@ import {
   Code2,
   GitCommit,
   Layers,
+  MessageSquare,
   RefreshCw,
 } from "lucide-react";
 
@@ -27,7 +29,7 @@ export default function AgentDetailPage() {
   const [traces, setTraces] = useState<Trace[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [activeTab, setActiveTab] = useState<"traces" | "versions">("traces");
+  const [activeTab, setActiveTab] = useState<"chat" | "traces" | "versions">("chat");
 
   const loadData = useCallback(async () => {
     if (!agentId) return;
@@ -239,6 +241,17 @@ export default function AgentDetailPage() {
       {/* Tabs */}
       <div className="border-b border-neutral-850 flex gap-4 text-xs">
         <button
+          onClick={() => setActiveTab("chat")}
+          className={`pb-2 font-medium border-b-2 transition-colors flex items-center gap-1.5 ${
+            activeTab === "chat"
+              ? "border-emerald-500 text-emerald-400 font-semibold"
+              : "border-transparent text-neutral-400 hover:text-neutral-200"
+          }`}
+        >
+          <MessageSquare size={13} />
+          <span>Interactive Chat</span>
+        </button>
+        <button
           onClick={() => setActiveTab("traces")}
           className={`pb-2 font-medium border-b-2 transition-colors ${
             activeTab === "traces"
@@ -259,6 +272,14 @@ export default function AgentDetailPage() {
           Version History ({versions.length})
         </button>
       </div>
+
+      {/* Tab 0: Interactive Chat */}
+      {activeTab === "chat" && (
+        <AgentChatPane
+          agent={agent}
+          onAgentUpdated={(updated) => setAgent(updated)}
+        />
+      )}
 
       {/* Tab 1: Traces */}
       {activeTab === "traces" && (
