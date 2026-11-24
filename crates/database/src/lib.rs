@@ -10,11 +10,11 @@ use agentlens_domain::{
     AlertSeverity, AnalyticsFilters, AnalyticsOverview, ApiKey, AuditLog, ChatMessage, ChatSession,
     CostAnalyticsResult, CostTimePoint, Environment, ErrorAnalyticsResult, ErrorTimePoint,
     LatencyAnalyticsResult, ModelAnalyticsItem, ModelPricing, NotificationChannel,
-    NotificationChannelType, NotificationDelivery, NotificationDeliveryStatus, OrgRole, Organization,
-    OrganizationMember, OutboxJob, Project, ProjectOverviewMetrics, Session, Span, SpanDetail,
-    SpanEvent, SpanId, SpanLink, SpanType, TokenAnalyticsResult, TokenUsage, TokenUsageTimePoint,
-    ToolAnalyticsItem, TopErrorItem, Trace, TraceId, TraceQueryFilters, TraceQueryResult, TraceStatus,
-    UsageSource, User,
+    NotificationChannelType, NotificationDelivery, NotificationDeliveryStatus, OrgRole,
+    Organization, OrganizationMember, OutboxJob, Project, ProjectOverviewMetrics, Session, Span,
+    SpanDetail, SpanEvent, SpanId, SpanLink, SpanType, TokenAnalyticsResult, TokenUsage,
+    TokenUsageTimePoint, ToolAnalyticsItem, TopErrorItem, Trace, TraceId, TraceQueryFilters,
+    TraceQueryResult, TraceStatus, UsageSource, User,
 };
 use agentlens_telemetry::NormalizedSpan;
 use chrono::{DateTime, Utc};
@@ -1758,6 +1758,7 @@ impl<'a> ChatRepository<'a> {
         Ok(row)
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub async fn append_message(
         &self,
         org_id: Uuid,

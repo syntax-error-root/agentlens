@@ -65,7 +65,11 @@ async fn validate_target_url(url_str: &str, allow_local: bool) -> Result<reqwest
     let url = reqwest::Url::parse(url_str).map_err(|e| format!("Invalid URL: {e}"))?;
     match url.scheme() {
         "http" | "https" => {}
-        other => return Err(format!("Disallowed URL scheme: {other}. Only http/https supported")),
+        other => {
+            return Err(format!(
+                "Disallowed URL scheme: {other}. Only http/https supported"
+            ))
+        }
     }
 
     let host = url
@@ -86,7 +90,8 @@ async fn validate_target_url(url_str: &str, allow_local: bool) -> Result<reqwest
     for addr in addrs {
         let ip = addr.ip();
         if is_ip_blocked(ip) {
-            let is_loopback = ip.is_loopback() || ip.to_string() == "127.0.0.1" || ip.to_string() == "::1";
+            let is_loopback =
+                ip.is_loopback() || ip.to_string() == "127.0.0.1" || ip.to_string() == "::1";
             if allow_local && is_loopback {
                 continue;
             }
@@ -106,26 +111,61 @@ pub async fn list_chat_sessions_handler(
 ) -> Response {
     let pool = match &state.db {
         Some(p) => p,
-        None => return (StatusCode::SERVICE_UNAVAILABLE, Json(json!({ "error": "Database unavailable" }))).into_response(),
+        None => {
+            return (
+                StatusCode::SERVICE_UNAVAILABLE,
+                Json(json!({ "error": "Database unavailable" })),
+            )
+                .into_response()
+        }
     };
 
     let agent_repo = AgentsRepository::new(pool);
     let agent = match agent_repo.get_by_id_global(agent_id).await {
         Ok(Some(a)) => a,
-        Ok(None) => return (StatusCode::NOT_FOUND, Json(json!({ "error": "Agent not found" }))).into_response(),
-        Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({ "error": format!("{e}") }))).into_response(),
+        Ok(None) => {
+            return (
+                StatusCode::NOT_FOUND,
+                Json(json!({ "error": "Agent not found" })),
+            )
+                .into_response()
+        }
+        Err(e) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({ "error": format!("{e}") })),
+            )
+                .into_response()
+        }
     };
 
     let member_repo = OrganizationMembersRepository::new(pool);
-    if member_repo.get_role(agent.organization_id, session.user_id).await.ok().flatten().is_none() {
-        return (StatusCode::FORBIDDEN, Json(json!({ "error": "Access denied" }))).into_response();
+    if member_repo
+        .get_role(agent.organization_id, session.user_id)
+        .await
+        .ok()
+        .flatten()
+        .is_none()
+    {
+        return (
+            StatusCode::FORBIDDEN,
+            Json(json!({ "error": "Access denied" })),
+        )
+            .into_response();
     }
 
     let chat_repo = ChatRepository::new(pool);
     let limit = query.limit.unwrap_or(50).clamp(1, 100);
-    match chat_repo.list_sessions(agent.project_id, agent.id, limit).await {
+    match chat_repo
+        .list_sessions(agent.project_id, agent.id, limit)
+        .await
+    {
         Ok(sessions) => Json(sessions).into_response(),
-        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({ "error": format!("{e}") }))).into_response(),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({ "error": format!("{e}") })),
+        )
+            .into_response(),
     }
 }
 
@@ -138,29 +178,67 @@ pub async fn create_chat_session_handler(
 ) -> Response {
     let pool = match &state.db {
         Some(p) => p,
-        None => return (StatusCode::SERVICE_UNAVAILABLE, Json(json!({ "error": "Database unavailable" }))).into_response(),
+        None => {
+            return (
+                StatusCode::SERVICE_UNAVAILABLE,
+                Json(json!({ "error": "Database unavailable" })),
+            )
+                .into_response()
+        }
     };
 
     let agent_repo = AgentsRepository::new(pool);
     let agent = match agent_repo.get_by_id_global(agent_id).await {
         Ok(Some(a)) => a,
-        Ok(None) => return (StatusCode::NOT_FOUND, Json(json!({ "error": "Agent not found" }))).into_response(),
-        Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({ "error": format!("{e}") }))).into_response(),
+        Ok(None) => {
+            return (
+                StatusCode::NOT_FOUND,
+                Json(json!({ "error": "Agent not found" })),
+            )
+                .into_response()
+        }
+        Err(e) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({ "error": format!("{e}") })),
+            )
+                .into_response()
+        }
     };
 
     let member_repo = OrganizationMembersRepository::new(pool);
-    if member_repo.get_role(agent.organization_id, session.user_id).await.ok().flatten().is_none() {
-        return (StatusCode::FORBIDDEN, Json(json!({ "error": "Access denied" }))).into_response();
+    if member_repo
+        .get_role(agent.organization_id, session.user_id)
+        .await
+        .ok()
+        .flatten()
+        .is_none()
+    {
+        return (
+            StatusCode::FORBIDDEN,
+            Json(json!({ "error": "Access denied" })),
+        )
+            .into_response();
     }
 
     let chat_repo = ChatRepository::new(pool);
     let title = input.title.as_deref().unwrap_or("New Conversation");
     match chat_repo
-        .create_session(agent.organization_id, agent.project_id, agent.id, Some(session.user_id), title)
+        .create_session(
+            agent.organization_id,
+            agent.project_id,
+            agent.id,
+            Some(session.user_id),
+            title,
+        )
         .await
     {
         Ok(sess) => (StatusCode::CREATED, Json(sess)).into_response(),
-        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({ "error": format!("{e}") }))).into_response(),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({ "error": format!("{e}") })),
+        )
+            .into_response(),
     }
 }
 
@@ -173,7 +251,13 @@ pub async fn list_chat_messages_handler(
 ) -> Response {
     let pool = match &state.db {
         Some(p) => p,
-        None => return (StatusCode::SERVICE_UNAVAILABLE, Json(json!({ "error": "Database unavailable" }))).into_response(),
+        None => {
+            return (
+                StatusCode::SERVICE_UNAVAILABLE,
+                Json(json!({ "error": "Database unavailable" })),
+            )
+                .into_response()
+        }
     };
 
     let chat_repo = ChatRepository::new(pool);
@@ -188,24 +272,56 @@ pub async fn list_chat_messages_handler(
     .bind(session_id)
     .map(|r: sqlx::postgres::PgRow| {
         use sqlx::Row;
-        (r.get::<Uuid, _>("organization_id"), r.get::<Uuid, _>("project_id"))
+        (
+            r.get::<Uuid, _>("organization_id"),
+            r.get::<Uuid, _>("project_id"),
+        )
     })
     .fetch_optional(pool)
     .await
     {
         Ok(Some((org_id, proj_id))) => (org_id, proj_id),
-        Ok(None) => return (StatusCode::NOT_FOUND, Json(json!({ "error": "Chat session not found" }))).into_response(),
-        Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({ "error": format!("{e}") }))).into_response(),
+        Ok(None) => {
+            return (
+                StatusCode::NOT_FOUND,
+                Json(json!({ "error": "Chat session not found" })),
+            )
+                .into_response()
+        }
+        Err(e) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({ "error": format!("{e}") })),
+            )
+                .into_response()
+        }
     };
 
     let member_repo = OrganizationMembersRepository::new(pool);
-    if member_repo.get_role(chat_session_row.0, session.user_id).await.ok().flatten().is_none() {
-        return (StatusCode::FORBIDDEN, Json(json!({ "error": "Access denied" }))).into_response();
+    if member_repo
+        .get_role(chat_session_row.0, session.user_id)
+        .await
+        .ok()
+        .flatten()
+        .is_none()
+    {
+        return (
+            StatusCode::FORBIDDEN,
+            Json(json!({ "error": "Access denied" })),
+        )
+            .into_response();
     }
 
-    match chat_repo.list_messages(chat_session_row.1, session_id, limit).await {
+    match chat_repo
+        .list_messages(chat_session_row.1, session_id, limit)
+        .await
+    {
         Ok(messages) => Json(messages).into_response(),
-        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({ "error": format!("{e}") }))).into_response(),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({ "error": format!("{e}") })),
+        )
+            .into_response(),
     }
 }
 
@@ -218,42 +334,92 @@ pub async fn send_chat_message_handler(
 ) -> Response {
     let pool = match &state.db {
         Some(p) => p.clone(),
-        None => return (StatusCode::SERVICE_UNAVAILABLE, Json(json!({ "error": "Database unavailable" }))).into_response(),
+        None => {
+            return (
+                StatusCode::SERVICE_UNAVAILABLE,
+                Json(json!({ "error": "Database unavailable" })),
+            )
+                .into_response()
+        }
     };
 
     let user_prompt = input.content.trim().to_string();
     if user_prompt.is_empty() {
-        return (StatusCode::BAD_REQUEST, Json(json!({ "error": "Message content cannot be empty" }))).into_response();
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({ "error": "Message content cannot be empty" })),
+        )
+            .into_response();
     }
 
     let agent_repo = AgentsRepository::new(&pool);
     let agent = match agent_repo.get_by_id_global(agent_id).await {
         Ok(Some(a)) => a,
-        Ok(None) => return (StatusCode::NOT_FOUND, Json(json!({ "error": "Agent not found" }))).into_response(),
-        Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({ "error": format!("{e}") }))).into_response(),
+        Ok(None) => {
+            return (
+                StatusCode::NOT_FOUND,
+                Json(json!({ "error": "Agent not found" })),
+            )
+                .into_response()
+        }
+        Err(e) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({ "error": format!("{e}") })),
+            )
+                .into_response()
+        }
     };
 
     let member_repo = OrganizationMembersRepository::new(&pool);
-    if member_repo.get_role(agent.organization_id, session.user_id).await.ok().flatten().is_none() {
-        return (StatusCode::FORBIDDEN, Json(json!({ "error": "Access denied to agent organization" }))).into_response();
+    if member_repo
+        .get_role(agent.organization_id, session.user_id)
+        .await
+        .ok()
+        .flatten()
+        .is_none()
+    {
+        return (
+            StatusCode::FORBIDDEN,
+            Json(json!({ "error": "Access denied to agent organization" })),
+        )
+            .into_response();
     }
 
     let endpoint_url = match &agent.endpoint_url {
         Some(u) if !u.trim().is_empty() => u.trim(),
-        _ => return (StatusCode::BAD_REQUEST, Json(json!({ "error": "Agent has no endpoint URL configured" }))).into_response(),
+        _ => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(json!({ "error": "Agent has no endpoint URL configured" })),
+            )
+                .into_response()
+        }
     };
 
     let allow_local = state.config.server.allow_local_agent_endpoints;
     let validated_url = match validate_target_url(endpoint_url, allow_local).await {
         Ok(u) => u,
-        Err(e) => return (StatusCode::BAD_REQUEST, Json(json!({ "error": format!("SSRF validation failed: {e}") }))).into_response(),
+        Err(e) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(json!({ "error": format!("SSRF validation failed: {e}") })),
+            )
+                .into_response()
+        }
     };
 
     let chat_repo = ChatRepository::new(&pool);
     let chat_session = match input.session_id {
         Some(sid) => match chat_repo.get_session(agent.project_id, sid).await {
             Ok(Some(s)) => s,
-            _ => return (StatusCode::NOT_FOUND, Json(json!({ "error": "Specified chat session not found" }))).into_response(),
+            _ => {
+                return (
+                    StatusCode::NOT_FOUND,
+                    Json(json!({ "error": "Specified chat session not found" })),
+                )
+                    .into_response()
+            }
         },
         None => {
             let auto_title = if user_prompt.chars().count() > 30 {
@@ -262,23 +428,53 @@ pub async fn send_chat_message_handler(
             } else {
                 user_prompt.clone()
             };
-            match chat_repo.create_session(agent.organization_id, agent.project_id, agent.id, Some(session.user_id), &auto_title).await {
+            match chat_repo
+                .create_session(
+                    agent.organization_id,
+                    agent.project_id,
+                    agent.id,
+                    Some(session.user_id),
+                    &auto_title,
+                )
+                .await
+            {
                 Ok(s) => s,
-                Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({ "error": format!("Failed creating chat session: {e}") }))).into_response(),
+                Err(e) => {
+                    return (
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        Json(json!({ "error": format!("Failed creating chat session: {e}") })),
+                    )
+                        .into_response()
+                }
             }
         }
     };
 
     // Record user message
     if let Err(e) = chat_repo
-        .append_message(agent.organization_id, agent.project_id, chat_session.id, "user", &user_prompt, None, None)
+        .append_message(
+            agent.organization_id,
+            agent.project_id,
+            chat_session.id,
+            "user",
+            &user_prompt,
+            None,
+            None,
+        )
         .await
     {
-        return (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({ "error": format!("Failed to record message: {e}") }))).into_response();
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({ "error": format!("Failed to record message: {e}") })),
+        )
+            .into_response();
     }
 
     // Load conversation history for OpenAI-compatible context
-    let history = chat_repo.list_messages(agent.project_id, chat_session.id, 50).await.unwrap_or_default();
+    let history = chat_repo
+        .list_messages(agent.project_id, chat_session.id, 50)
+        .await
+        .unwrap_or_default();
     let open_ai_messages: Vec<OpenAiMessage> = history
         .into_iter()
         .map(|m| OpenAiMessage {
@@ -313,12 +509,22 @@ pub async fn send_chat_message_handler(
 
     let agent_res = match req_builder.send().await {
         Ok(r) => r,
-        Err(e) => return (StatusCode::BAD_GATEWAY, Json(json!({ "error": format!("Failed to connect to agent endpoint: {e}") }))).into_response(),
+        Err(e) => {
+            return (
+                StatusCode::BAD_GATEWAY,
+                Json(json!({ "error": format!("Failed to connect to agent endpoint: {e}") })),
+            )
+                .into_response()
+        }
     };
 
     if !agent_res.status().is_success() {
         let err_text = agent_res.text().await.unwrap_or_default();
-        return (StatusCode::BAD_GATEWAY, Json(json!({ "error": format!("Agent endpoint returned error: {err_text}") }))).into_response();
+        return (
+            StatusCode::BAD_GATEWAY,
+            Json(json!({ "error": format!("Agent endpoint returned error: {err_text}") })),
+        )
+            .into_response();
     }
 
     let org_id = agent.organization_id;
@@ -335,7 +541,9 @@ pub async fn send_chat_message_handler(
 
         // Emit initial session_id metadata event
         let _ = tx
-            .send(Ok(Event::default().event("meta").data(json!({ "session_id": chat_sess_id }).to_string())))
+            .send(Ok(Event::default()
+                .event("meta")
+                .data(json!({ "session_id": chat_sess_id }).to_string())))
             .await;
 
         while let Some(item) = stream.next().await {
@@ -373,15 +581,27 @@ pub async fn send_chat_message_handler(
         if !full_assistant_content.is_empty() {
             let chat_repo = ChatRepository::new(&pool);
             let _ = chat_repo
-                .append_message(org_id, proj_id, chat_sess_id, "assistant", &full_assistant_content, None, None)
+                .append_message(
+                    org_id,
+                    proj_id,
+                    chat_sess_id,
+                    "assistant",
+                    &full_assistant_content,
+                    None,
+                    None,
+                )
                 .await;
         }
 
         let _ = tx
-            .send(Ok(Event::default().event("done").data(json!({ "status": "completed" }).to_string())))
+            .send(Ok(Event::default()
+                .event("done")
+                .data(json!({ "status": "completed" }).to_string())))
             .await;
     });
 
     let sse_stream = tokio_stream::wrappers::ReceiverStream::new(rx);
-    Sse::new(sse_stream).keep_alive(KeepAlive::default()).into_response()
+    Sse::new(sse_stream)
+        .keep_alive(KeepAlive::default())
+        .into_response()
 }
