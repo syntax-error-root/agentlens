@@ -1,0 +1,149 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  rust-checks:
+    name: Rust Workspace Checks
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres_password
+          POSTGRES_DB: agentlens
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    env:
+      DATABASE_URL: postgres://postgres:postgres_password@localhost:5432/agentlens
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust Stable
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - name: Rust Cache
+        uses: Swatinem/rust-cache@v2
+
+      - name: Cargo Format Check
+        run: cargo fmt --all -- --check
+
+      - name: Cargo Clippy
+        run: cargo clippy --workspace --all-targets --all-features -- -D warnings
+
+      - name: Cargo Test
+        run: cargo test --workspace
+
+  dashboard-checks:
+    name: Next.js Dashboard Checks
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 9
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: 'pnpm'
+
+      - name: Install Dependencies
+        run: pnpm install --frozen-lockfile=false
+
+      - name: Dashboard Lint
+        run: pnpm --filter dashboard lint
+
+      - name: Dashboard Typecheck
+        run: pnpm --filter dashboard typecheck
+
+      - name: Dashboard Build
+        run: pnpm --filter dashboard build
+
+  typescript-sdk-checks:
+    name: TypeScript SDK Checks
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 9
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: 'pnpm'
+
+      - name: Install Dependencies
+        run: pnpm install --frozen-lockfile=false
+
+      - name: TypeScript SDK Lint
+        run: pnpm --filter @agentlens/sdk lint
+
+      - name: TypeScript SDK Typecheck
+        run: pnpm --filter @agentlens/sdk typecheck
+
+      - name: TypeScript SDK Build
+        run: pnpm --filter @agentlens/sdk build
+
+      - name: TypeScript SDK Test
+        run: pnpm --filter @agentlens/sdk test
+
+  python-sdk-checks:
+    name: Python SDK Checks
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          version: "latest"
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+
+      - name: Install SDK dependencies
+        run: |
+          cd sdk/python
+          uv pip install --system -e ".[dev]"
+
+      - name: Python Ruff Check
+        run: |
+          cd sdk/python
+          uv run ruff check .
+
+      - name: Python Mypy
+        run: |
+          cd sdk/python
+          uv run mypy src
+
+      - name: Python Pytest
+        run: |
+          cd sdk/python
+          uv run pytest

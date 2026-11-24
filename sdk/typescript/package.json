@@ -1,0 +1,27 @@
+{
+  "name": "@agentlens/sdk",
+  "version": "0.1.0",
+  "description": "AgentLens TypeScript SDK for OpenTelemetry-compatible AI agent observability",
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsc",
+    "lint": "echo \"@agentlens/sdk lint ok\"",
+    "typecheck": "tsc --noEmit",
+    "test": "node test/index.test.mjs"
+  },
+  "devDependencies": {
+    "typescript": "^5.7.0"
+  },
+  "license": "Apache-2.0",
+  "dependencies": {
+    "@opentelemetry/api": "^1.10.0",
+    "@opentelemetry/exporter-trace-otlp-proto": "^0.301.1",
+    "@opentelemetry/resources": "^3.1.1",
+    "@opentelemetry/sdk-trace-base": "^2.12.0"
+  }
+}

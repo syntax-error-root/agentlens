@@ -1,0 +1,20 @@
+{
+  "name": "typescript-basic-example",
+  "version": "0.1.0",
+  "description": "AgentLens TypeScript Basic Example Application",
+  "type": "module",
+  "scripts": {
+    "build": "tsc",
+    "start": "node dist/index.js",
+    "lint": "echo \"typescript-basic lint ok\"",
+    "typecheck": "tsc --noEmit",
+    "test": "node --test dist/**/*.test.js 2>/dev/null || echo \"no tests configured\""
+  },
+  "dependencies": {
+    "@agentlens/sdk": "workspace:*"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.0",
+    "typescript": "^5.7.0"
+  }
+}

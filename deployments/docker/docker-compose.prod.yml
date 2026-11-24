@@ -1,0 +1,181 @@
+# Production Docker Compose Configuration for AgentLens
+# Hardened against public interface exposure, running non-root containers (UID:GID 65532:65532)
+# and isolated on an internal bridge network.
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: agentlens-prod-postgres
+    restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB:-agentlens}
+    # No exposed host ports in production; internal communication only
+    volumes:
+      - postgres-prod-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB:-agentlens}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    deploy:
+      resources:
+        limits:
+          cpus: "2.0"
+          memory: 2048M
+        reservations:
+          cpus: "0.5"
+          memory: 512M
+    networks:
+      - agentlens-internal
+
+  redis:
+    image: redis:7-alpine
+    container_name: agentlens-prod-redis
+    restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
+    command: ["redis-server", "--save", "60", "1", "--loglevel", "warning"]
+    # No exposed host ports in production; internal communication only
+    volumes:
+      - redis-prod-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    deploy:
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 512M
+    networks:
+      - agentlens-internal
+
+  minio:
+    image: minio/minio:RELEASE.2024-11-07T00-52-28Z
+    container_name: agentlens-prod-minio
+    restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
+    command: server /data
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD}
+    # No exposed host ports in production; internal communication only
+    volumes:
+      - minio-prod-data:/data
+    healthcheck:
+      test: ["CMD", "mc", "ready", "local"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    deploy:
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 1024M
+    networks:
+      - agentlens-internal
+
+  api:
+    build:
+      context: ../..
+      dockerfile: deployments/docker/Dockerfile.api
+    container_name: agentlens-prod-api
+    restart: unless-stopped
+    user: "65532:65532"
+    security_opt:
+      - no-new-privileges:true
+    environment:
+      API_BIND_ADDR: "0.0.0.0:8080"
+      OTLP_HTTP_BIND_ADDR: "0.0.0.0:4318"
+      DATABASE_URL: "postgres://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-agentlens}"
+      REDIS_URL: "redis://redis:6379"
+      S3_ENDPOINT: "http://minio:9000"
+      S3_BUCKET: ${S3_BUCKET:-agentlens-payloads}
+      APP_ENV: "production"
+      SESSION_SECRET: ${SESSION_SECRET}
+      APP_ENCRYPTION_KEY: ${APP_ENCRYPTION_KEY}
+    ports:
+      # API and OTLP ports exposed to reverse proxy or internal load balancer
+      - "8080:8080"
+      - "4318:4318"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    deploy:
+      resources:
+        limits:
+          cpus: "2.0"
+          memory: 1024M
+    networks:
+      - agentlens-internal
+
+  worker:
+    build:
+      context: ../..
+      dockerfile: deployments/docker/Dockerfile.worker
+    container_name: agentlens-prod-worker
+    restart: unless-stopped
+    user: "65532:65532"
+    security_opt:
+      - no-new-privileges:true
+    environment:
+      DATABASE_URL: "postgres://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-agentlens}"
+      REDIS_URL: "redis://redis:6379"
+      S3_ENDPOINT: "http://minio:9000"
+      S3_BUCKET: ${S3_BUCKET:-agentlens-payloads}
+      APP_ENV: "production"
+      APP_ENCRYPTION_KEY: ${APP_ENCRYPTION_KEY}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    deploy:
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 512M
+    networks:
+      - agentlens-internal
+
+  dashboard:
+    build:
+      context: ../..
+      dockerfile: deployments/docker/Dockerfile.dashboard
+    container_name: agentlens-prod-dashboard
+    restart: unless-stopped
+    user: "65532:65532"
+    security_opt:
+      - no-new-privileges:true
+    environment:
+      NODE_ENV: "production"
+      NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:-http://localhost:8080}
+    ports:
+      - "3000:3000"
+    depends_on:
+      - api
+    deploy:
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 512M
+    networks:
+      - agentlens-internal
+
+networks:
+  agentlens-internal:
+    driver: bridge
+
+volumes:
+  postgres-prod-data:
+  redis-prod-data:
+  minio-prod-data:

@@ -1,0 +1,17 @@
+[package]
+name = "agentlens-storage"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+
+[dependencies]
+agentlens-domain = { workspace = true }
+agentlens-config = { workspace = true }
+agentlens-observability = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+async-trait = "0.1"
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"] }

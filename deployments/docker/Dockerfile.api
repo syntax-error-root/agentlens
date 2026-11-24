@@ -1,0 +1,23 @@
+# Multi-stage Dockerfile for agentlens-api
+FROM rust:1.85-alpine AS builder
+
+RUN apk add --no-cache musl-dev pkgconfig openssl-dev
+
+WORKDIR /app
+COPY . .
+
+RUN cargo build --release --bin agentlens-api
+
+FROM alpine:3.20 AS runner
+
+RUN apk add --no-cache ca-certificates tzdata
+RUN addgroup -g 65532 -S agentlens && adduser -u 65532 -S agentlens -G agentlens
+
+USER 65532:65532
+WORKDIR /app
+
+COPY --from=builder /app/target/release/agentlens-api /app/agentlens-api
+
+EXPOSE 8080 4318
+
+ENTRYPOINT ["/app/agentlens-api"]

@@ -1,0 +1,25 @@
+[package]
+name = "agentlens-auth"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+
+[dependencies]
+agentlens-domain = { workspace = true }
+agentlens-config = { workspace = true }
+agentlens-observability = { workspace = true }
+thiserror = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+uuid = { workspace = true }
+chrono = { workspace = true }
+argon2 = { workspace = true }
+subtle = { workspace = true }
+sha2 = { workspace = true }
+hmac = { workspace = true }
+rand = { workspace = true }
+hex = { workspace = true }
+async-trait = { workspace = true }
+

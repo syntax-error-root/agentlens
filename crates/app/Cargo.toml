@@ -1,0 +1,22 @@
+[package]
+name = "agentlens-app"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+
+[dependencies]
+agentlens-domain = { workspace = true }
+agentlens-config = { workspace = true }
+agentlens-observability = { workspace = true }
+agentlens-database = { workspace = true }
+agentlens-auth = { workspace = true }
+agentlens-organizations = { workspace = true }
+agentlens-projects = { workspace = true }
+agentlens-agents = { workspace = true }
+agentlens-traces = { workspace = true }
+agentlens-analytics = { workspace = true }
+agentlens-alerts = { workspace = true }
+agentlens-jobs = { workspace = true }
+thiserror = { workspace = true }

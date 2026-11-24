@@ -1,0 +1,10 @@
+{
+  "name": "agentlens-monorepo",
+  "private": true,
+  "scripts": {
+    "lint": "pnpm --recursive run lint",
+    "typecheck": "pnpm --recursive run typecheck",
+    "test": "pnpm --recursive run test",
+    "build": "pnpm --recursive run build"
+  }
+}
