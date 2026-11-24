@@ -30,6 +30,7 @@
 - **Privacy by Default:** Prompt, completion, and tool payloads are never captured unless explicitly opted in (`capture_content = false`). Sensitive attributes, credentials, and API keys are automatically redacted in-stream.
 - **Versioned Exact Model Pricing:** Exact decimal cost tracking (`rust_decimal`) with versioned provider rate cards. Unpriced models surface truthfully as `NULL` / `has_unpriced_usage` rather than misleading $0.00 estimates.
 - **Production-Ready Dashboard:** Next.js App Router console featuring first-owner bootstrap, agent registry, cursor-paginated trace explorer, interactive span waterfall, and analytics charts.
+- **In-Dashboard Interactive Agent Chat:** Directly test and prompt connected agents from the dashboard with live Server-Sent Events (SSE) streaming. Supports OpenAI-compatible agent endpoints, multi-turn session persistence, and connection-level SSRF defense.
 - **Framework Integrations:** First-class, non-invasive callbacks and adapters for **LangGraph**, **LiteLLM**, **CrewAI**, **OpenAI Agents SDK**, and **MCP (Model Context Protocol)** tools.
 - **Production Hardened:** Non-root OCI containers (`UID:GID 65532:65532`), network-isolated compose tiers, automated large payload offloading to S3/MinIO (> 64 KiB), retention cleanup, and verified SHA-256 backup/restore tooling.
 
@@ -159,6 +160,17 @@ await client.withTrace("query-billing", async (trace) => {
   });
 });
 ```
+
+---
+
+## In-Dashboard Interactive Agent Chat
+
+AgentLens provides built-in bidirectional chat directly from the dashboard:
+
+1. **Connect Endpoint:** Navigate to **Agents** &rarr; select an agent &rarr; **Interactive Chat** tab &rarr; click **Set Endpoint**.
+2. **Configure Target:** Specify an OpenAI-compatible completion URL (e.g., `https://agent.internal/v1/chat/completions` or `http://localhost:8000/v1/chat/completions`), optional Bearer authentication token, and default model identifier.
+3. **SSRF Hardening:** Egress connections automatically block private, link-local, and cloud metadata IPs (`169.254.169.254`). For local testing on loopback (`127.0.0.1`), start `agentlens-api` with `ALLOW_LOCAL_AGENT_ENDPOINTS=true`.
+4. **Live Streaming & Persistence:** User prompts and assistant responses stream in real time via Server-Sent Events (SSE) and automatically persist into `chat_sessions` and `chat_messages` tables under your tenant boundary.
 
 ---
 
